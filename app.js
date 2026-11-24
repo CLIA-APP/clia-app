@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.3.1',
+  versao: '0.4.0',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -328,19 +328,20 @@ function formPaciente(p = null) {
 rotas.paciente = async (app, id, aba = 'ficha') => {
   app.innerHTML = shell('<div class="spinner"></div>', 'pacientes');
   const pasta = await ler('pasta:' + id, async () => {
-    const [p, eq, sub, resp, ses] = await Promise.all([
+    const [p, eq, sub, resp, ses, av] = await Promise.all([
       sb.from('paciente').select('*').eq('id', id).single(),
       sb.from('equipe_paciente').select('profissional_id,especialidade_id,ativo,profissional(nome,perfil_id,especialidade_id)').eq('paciente_id', id).eq('ativo', true),
       sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,objetivo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,alvos_por_sessao,tentativas_alvo,ativo,alvo(id,nome,fase,ordem,ativo,data_adquirido,alvo_evolucao(resultado,fase_anterior,fase_nova,motivo,calculado_em),manutencao_agenda(data_programada,data_realizada)),objetivo_nivel_ajuda(ordem,sigla,grau))').eq('paciente_id', id).eq('ativo', true),
       sb.from('responsavel').select('*').eq('paciente_id', id),
       sb.from('sessao').select('id,subpasta_id,profissional_id,data_sessao,situacao,falta,observacoes,profissional(nome)').eq('paciente_id', id).order('data_sessao', { ascending: false }).limit(60),
+      sb.from('avaliacao').select('id,protocolo_id,data_avaliacao,situacao,observacoes,protocolo(nome),profissional:aplicador_id(nome)').eq('paciente_id', id).order('data_avaliacao', { ascending: false }),
     ]);
-    return { data: { paciente: p.data, equipe: eq.data || [], subpastas: sub.data || [], responsaveis: resp.data || [], sessoes: ses.data || [] }, error: p.error };
+    return { data: { paciente: p.data, equipe: eq.data || [], subpastas: sub.data || [], responsaveis: resp.data || [], sessoes: ses.data || [], avaliacoes: av.data || [] }, error: p.error };
   });
   if (!pasta?.paciente) { $('.main', app).innerHTML = '<p class="erro">Paciente não encontrado ou sem permissão.</p>'; return; }
   const { paciente: p, equipe, subpastas, responsaveis } = pasta;
   const esp = (eid) => estado.especialidades.find(e => e.id === eid);
-  const abas = [['ficha', 'Ficha'], ['equipe', 'Equipe'], ...estado.especialidades.filter(e => e.subpasta).map(e => ['sub-' + e.id, e.nome])];
+  const abas = [['ficha', 'Ficha'], ['equipe', 'Equipe'], ['avaliacoes', 'Avaliações'], ...estado.especialidades.filter(e => e.subpasta).map(e => ['sub-' + e.id, e.nome])];
   const unid = estado.unidades.find(u => u.id === p.unidade_id);
 
   let corpo = '';
@@ -361,6 +362,11 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
     corpo = `<div class="card"><div class="phead" style="margin-bottom:12px"><h3>Equipe do paciente</h3>${['direcao','supervisor'].includes(estado.eu.perfil) ? '<button class="btn ghost sm" id="addeq">+ Profissional</button>' : ''}</div>
       ${equipe.length ? '<div class="lista">' + equipe.map(e => `<div class="it"><div><b>${esc(e.profissional?.nome || e.profissional_id)}</b><small>${esc(esp(e.especialidade_id || e.profissional?.especialidade_id)?.nome || '')}</small></div>
         ${['direcao','supervisor'].includes(estado.eu.perfil) ? `<button class="btn ghost sm" data-rm="${e.profissional_id}">remover</button>` : ''}</div>`).join('') + '</div>' : '<p class="muted">Ninguém na equipe ainda. Só quem está na equipe (ou a direção/supervisão) vê esta pasta.</p>'}</div>`;
+  } else if (aba === 'avaliacoes') {
+    const avs = pasta.avaliacoes || [];
+    corpo = `<div class="phead" style="margin-bottom:10px"><div><h3>Avaliações</h3><p class="muted">Preencha o protocolo aqui e o app monta a lista de objetivos sugeridos.</p></div>
+      ${possoConfigurar() ? '<button class="btn" id="novaav">+ Nova avaliação</button>' : ''}</div>
+      ${avs.length ? `<div class="lista">${avs.map(a => `<div class="it" data-ver-av="${a.id}"><div><b>${esc(a.protocolo?.nome || 'Protocolo')}</b><small>${fmtData(a.data_avaliacao)} · ${esc(a.profissional?.nome || '')} · ${a.situacao === 'FINALIZADA' ? 'finalizada' : a.situacao === 'CANCELADA' ? 'cancelada' : 'em preenchimento'}</small></div><span class="tag ${a.situacao === 'INICIADA' ? 'w' : ''}">${a.situacao === 'INICIADA' ? 'continuar' : 'abrir'}</span></div>`).join('')}</div>` : '<p class="muted">Nenhuma avaliação ainda.</p>'}`;
   } else {
     const eid = aba.replace('sub-', ''), e = esp(eid);
     if (!e) { ir('#/paciente/' + id + '/ficha'); return; }
@@ -397,6 +403,8 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
   const ao = $('#addobj', app); if (ao) ao.onclick = () => escolherPrograma(p, aba.replace('sub-', ''), subpastas);
   const bs = $('#sessao', app); if (bs) bs.onclick = () => bs.dataset.id ? ir('#/sessao/' + bs.dataset.id) : iniciarSessao(p, aba.replace('sub-', ''), subpastas);
   app.querySelectorAll('[data-ver-sessao]').forEach(b => b.onclick = () => ir('#/sessao/' + b.dataset.verSessao));
+  app.querySelectorAll('[data-ver-av]').forEach(b => b.onclick = () => ir('#/avaliacao/' + b.dataset.verAv));
+  const na = $('#novaav', app); if (na) na.onclick = () => novaAvaliacao(p);
   app.querySelectorAll('[data-fase-menu]').forEach(b => b.onclick = () => menuFase(b.dataset.faseMenu));
 };
 function contadorSub(subpastas, eid) {
@@ -700,6 +708,178 @@ rotas.sessao = async (app, id) => {
   desenhar();
 };
 function rotGrau(g) { return { MAIS_INTRUSIVA: 'ajuda total', PARCIAL_INTRUSIVA: 'ajuda parcial', MENOS_INTRUSIVA: 'ajuda leve', INDEPENDENTE: 'independente', ERRO: 'erro', OMISSAO: 'omissão' }[g] || ''; }
+
+// ----------------------------------------------------------------- avaliação
+async function novaAvaliacao(p) {
+  const { data: prots } = await sb.from('protocolo').select('id,nome,tipo').eq('ativo', true).order('nome');
+  modal(`<h3>Nova avaliação — ${esc(p.nome)}</h3>
+    <p class="muted" style="margin:0 0 10px;font-size:13px">Aplique o protocolo no formulário original e registre aqui o resultado de cada item. Ao finalizar, o app mostra os objetivos sugeridos.</p>
+    <form class="form" id="fa">
+      <div><label>Protocolo</label><select name="protocolo_id" required>${(prots || []).map(x => `<option value="${x.id}">${esc(x.nome)}${x.tipo === 'REDUCAO' ? ' (comportamento-problema)' : ''}</option>`).join('')}</select></div>
+      <div><label>Data da aplicação</label>${campoData('data_avaliacao', hoje())}</div>
+      <div><label>Observações</label><input name="observacoes"></div>
+      <div class="acoes"><button type="button" class="btn ghost" data-fechar>Cancelar</button><button class="btn">Começar</button></div></form>`);
+  $('#fa').onsubmit = async (ev) => {
+    ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+    const d = lerDatas(ev.target);
+    const reg = { id: uuid(), paciente_id: p.id, protocolo_id: f.protocolo_id, aplicador_id: estado.eu.id,
+      data_avaliacao: d.data_avaliacao || hoje(), situacao: 'INICIADA', observacoes: f.observacoes || null };
+    const r = await gravar('avaliacao', reg);
+    if (!r.ok) return toast('Não foi possível criar: ' + r.erro, 6000);
+    fecharModal(); ir('#/avaliacao/' + reg.id);
+  };
+}
+
+rotas.avaliacao = async (app, id) => {
+  app.innerHTML = shell('<div class="spinner"></div>', 'pacientes');
+  const pk = await ler('avaliacao:' + id, async () => {
+    const { data: av, error } = await sb.from('avaliacao').select('*, protocolo(id,nome,tipo), paciente(id,nome)').eq('id', id).single();
+    if (error) return { error };
+    const [{ data: itens }, { data: pont }, { data: niveis }, { data: habs }, { data: resp }] = await Promise.all([
+      sb.from('protocolo_item').select('id,nivel_id,habilidade_id,marco,numero_item,ordem,texto,grupo_pontuacao,inverso').eq('protocolo_id', av.protocolo_id).eq('ativo', true).order('ordem'),
+      sb.from('protocolo_pontuacao').select('id,grupo,ordem,rotulo,tipo_resposta,valor_pct').eq('protocolo_id', av.protocolo_id).order('ordem'),
+      sb.from('protocolo_nivel').select('id,ordem,nome').eq('protocolo_id', av.protocolo_id).order('ordem'),
+      sb.from('protocolo_habilidade').select('id,ordem,nome').eq('protocolo_id', av.protocolo_id).order('ordem'),
+      sb.from('avaliacao_resposta').select('id,item_id,pontuacao_id,observacao').eq('avaliacao_id', id),
+    ]);
+    return { data: { av, itens: itens || [], pont: pont || [], niveis: niveis || [], habs: habs || [], resp: resp || [] }, error: null };
+  });
+  if (!pk) { $('.main', app).innerHTML = '<p class="erro">Avaliação não encontrada neste aparelho e sem conexão.</p>'; return; }
+  const { av, itens, pont, niveis, habs } = pk;
+  const fechada = av.situacao !== 'INICIADA';
+  const podeEditar = !fechada && possoConfigurar();
+  const corte = +estado.regras.PONTO_DE_CORTE || 75;
+  const resp = (itemId) => pk.resp.find(r => r.item_id === itemId);
+  const escalaDe = (it) => pont.filter(x => x.grupo === (it.grupo_pontuacao || 0)).sort((a, b) => a.ordem - b.ordem);
+  const nome = (lista, id2) => lista.find(x => x.id === id2)?.nome || '';
+  const grupos = [];
+  for (const it of itens) {
+    const chave = (it.nivel_id || '') + '|' + (it.habilidade_id || '');
+    let g = grupos.find(x => x.chave === chave);
+    if (!g) { g = { chave, nivel: nome(niveis, it.nivel_id), hab: nome(habs, it.habilidade_id), itens: [] }; grupos.push(g); }
+    g.itens.push(it);
+  }
+  let abertos = new Set();
+
+  const desenhar = () => {
+    const respondidos = pk.resp.length;
+    const abaixo = pk.resp.filter(r => { const it = itens.find(i => i.id === r.item_id); const p = pctResposta(r, it, pont); return p !== null && p < corte; }).length;
+    const blocos = grupos.map((g, gi) => {
+      const feitos = g.itens.filter(i => resp(i.id)).length;
+      const aberto = abertos.has(gi);
+      return `<div class="grupo-av"><button class="cab-grupo" data-g="${gi}">
+          <span><b>${esc(g.hab || g.nivel || 'Itens')}</b>${g.nivel && g.hab ? ` <span class="muted">· ${esc(g.nivel)}</span>` : ''}</span>
+          <span class="tag ${feitos === g.itens.length ? 'b' : ''}">${feitos}/${g.itens.length}</span></button>
+        ${aberto ? g.itens.map(it => {
+          const r = resp(it.id), esc0 = escalaDe(it);
+          const p = r ? pctResposta(r, it, pont) : null;
+          return `<div class="item-av ${p === null ? '' : p < corte ? 'baixo' : 'ok'}">
+            <div class="item-txt">${it.marco ? `<span class="tag">${esc(it.marco)}</span> ` : ''}${esc(it.texto)}${it.inverso ? ' <span class="tag w" title="pontuação alta = dificuldade">invertido</span>' : ''}</div>
+            <div class="escala">${esc0.map(x => `<button class="nota ${r && r.pontuacao_id === x.id ? 'on' : ''}" data-item="${it.id}" data-pont="${x.id}" ${podeEditar ? '' : 'disabled'} title="${esc(x.tipo_resposta || '')}">${esc(x.rotulo)}</button>`).join('')}${r && podeEditar ? `<button class="nota limpar" data-item="${it.id}" data-limpar>apagar</button>` : ''}</div></div>`;
+        }).join('') : ''}</div>`;
+    }).join('');
+    $('.main', app).innerHTML = `
+      <div class="phead"><div><p style="margin:0"><button class="link" onclick="location.hash='#/paciente/${av.paciente_id}/avaliacoes'">← ${esc(av.paciente?.nome || 'Paciente')}</button></p>
+        <h1>${esc(av.protocolo?.nome || 'Avaliação')}</h1>
+        <p>${fmtData(av.data_avaliacao)} · ${respondidos} de ${itens.length} itens${respondidos ? ` · ${abaixo} abaixo de ${corte}%` : ''}${fechada ? ' · finalizada' : ''}</p></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${fechada ? `<button class="btn" id="props">Ver objetivos sugeridos</button>` : (podeEditar && respondidos ? `<button class="btn" id="fimav">Finalizar e sugerir objetivos</button>` : '')}</div></div>
+      ${podeEditar ? `<p class="muted" style="font-size:12.5px;margin:0 0 10px">Abra um bloco e toque na nota de cada item. Não precisa responder tudo — só o que foi aplicado. Itens abaixo de ${corte}% viram sugestão de objetivo.</p>` : ''}
+      <div class="busca"><input id="qav" placeholder="Procurar item…" autocomplete="off"><button class="btn ghost sm" id="abretudo">abrir/fechar tudo</button></div>
+      ${blocos}`;
+    app.querySelectorAll('.cab-grupo').forEach(b => b.onclick = () => { const g = +b.dataset.g; abertos.has(g) ? abertos.delete(g) : abertos.add(g); desenhar(); });
+    app.querySelectorAll('.nota').forEach(b => b.onclick = () => responder(b.dataset.item, b.hasAttribute('data-limpar') ? null : b.dataset.pont));
+    const bt = $('#abretudo', app); if (bt) bt.onclick = () => { if (abertos.size) abertos = new Set(); else grupos.forEach((_, i) => abertos.add(i)); desenhar(); };
+    const bq = $('#qav', app); if (bq) bq.oninput = () => {
+      const q = bq.value.trim().toLowerCase();
+      if (q.length < 2) return;
+      abertos = new Set(grupos.map((g, i) => g.itens.some(it => it.texto.toLowerCase().includes(q)) ? i : -1).filter(i => i >= 0));
+      const v2 = bq.value; desenhar(); const n = $('#qav', app); n.value = v2; n.focus();
+    };
+    const bf = $('#fimav', app); if (bf) bf.onclick = () => finalizarAvaliacao();
+    const bp = $('#props', app); if (bp) bp.onclick = () => verPropostas(av, id);
+  };
+
+  const responder = async (itemId, pontId) => {
+    const atual = resp(itemId);
+    if (!pontId) {
+      if (atual) { pk.resp = pk.resp.filter(r => r !== atual); await DB.set('avaliacao:' + id, pk); sb.from('avaliacao_resposta').delete().eq('id', atual.id).then(() => {}); }
+      return desenhar();
+    }
+    const reg = { id: atual?.id || uuid(), avaliacao_id: id, item_id: itemId, pontuacao_id: pontId };
+    if (atual) Object.assign(atual, reg); else pk.resp.push(reg);
+    await DB.set('avaliacao:' + id, pk);
+    desenhar();
+    const r = await gravar('avaliacao_resposta', reg);
+    if (!r.ok) toast('Resposta não gravada: ' + r.erro, 5000);
+  };
+
+  const finalizarAvaliacao = () => {
+    const faltam = itens.length - pk.resp.length;
+    modal(`<h3>Finalizar avaliação</h3>
+      <p class="muted" style="margin:0 0 10px;font-size:13px">${faltam ? `${faltam} item(ns) sem resposta — eles ficam de fora das sugestões.` : 'Todos os itens foram respondidos.'}</p>
+      <form class="form" id="ffa"><div><label>Observações da avaliação</label><textarea name="observacoes">${esc(av.observacoes)}</textarea></div>
+      <div class="acoes"><button type="button" class="btn ghost" data-fechar>Voltar</button><button class="btn">Finalizar</button></div></form>`);
+    $('#ffa').onsubmit = async (ev) => {
+      ev.preventDefault();
+      if (!online()) return toast('Para finalizar e gerar as sugestões é preciso estar com internet.');
+      const up = { id, situacao: 'FINALIZADA', observacoes: new FormData(ev.target).get('observacoes') || null };
+      const { error } = await sb.from('avaliacao').update(up).eq('id', id);
+      if (error) return toast(error.message, 5000);
+      Object.assign(av, up); await DB.set('avaliacao:' + id, pk);
+      fecharModal(); verPropostas(av, id);
+    };
+  };
+  desenhar();
+};
+
+// % de uma resposta (espelha resposta_pct do banco: normaliza a escala e inverte se o item for invertido)
+function pctResposta(r, it, pont) {
+  const p = pont.find(x => x.id === r.pontuacao_id);
+  if (!p) return r.valor_pct ?? null;
+  const grupo = pont.filter(x => x.grupo === p.grupo);
+  const min = Math.min(...grupo.map(x => +x.valor_pct)), max = Math.max(...grupo.map(x => +x.valor_pct));
+  let v2 = max > min ? 100 * (+p.valor_pct - min) / (max - min) : +p.valor_pct;
+  if (it && it.inverso) v2 = 100 - v2;
+  return Math.round(v2 * 100) / 100;
+}
+
+async function verPropostas(av, avaliacaoId) {
+  const app = $('#app');
+  app.innerHTML = shell('<div class="spinner"></div>', 'pacientes');
+  const { data, error } = await sb.rpc('propor_objetivos', { p_avaliacao: avaliacaoId, p_especialidade: null });
+  if (error) { $('.main', app).innerHTML = `<p class="erro">${esc(error.message)}</p>`; return; }
+  const props = data || [];
+  const porEsp = [];
+  for (const p of props) {
+    let g = porEsp.find(x => x.id === p.especialidade_id);
+    if (!g) { g = { id: p.especialidade_id, nome: p.especialidade || 'Sem especialidade', itens: [] }; porEsp.push(g); }
+    g.itens.push(p);
+  }
+  const escolhidos = new Set(props.filter(p => p.origem === 'ITEM').map(p => p.programa_id));
+  const desenhar = () => {
+    $('.main', app).innerHTML = `
+      <div class="phead"><div><p style="margin:0"><button class="link" onclick="location.hash='#/paciente/${av.paciente_id}/avaliacoes'">← ${esc(av.paciente?.nome || 'Paciente')}</button></p>
+        <h1>Objetivos sugeridos</h1><p>${esc(av.protocolo?.nome || '')} · ${props.length} sugestão(ões) a partir dos itens abaixo de ${+estado.regras.PONTO_DE_CORTE || 75}%</p></div>
+        <button class="btn" id="aplicar">Adicionar ${escolhidos.size} à pasta</button></div>
+      ${props.length ? '' : '<p class="muted">Nenhum item ficou abaixo do ponto de corte — nada a sugerir.</p>'}
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">Vêm marcados os que ligam direto ao item da avaliação. Os marcados como "por área" são parecidos, confira antes. Eles entram em linha de base, na subpasta da especialidade.</p>
+      ${porEsp.map(g => `<div class="card" style="margin-bottom:12px"><div class="phead" style="margin-bottom:8px"><h3>${esc(g.nome)}</h3><span class="tag">${g.itens.filter(p => escolhidos.has(p.programa_id)).length} de ${g.itens.length}</span></div>
+        <div class="lista">${g.itens.map(p => `<div class="it prop ${escolhidos.has(p.programa_id) ? 'on' : ''}" data-pg="${p.programa_id}" style="cursor:pointer">
+          <div><b>${escolhidos.has(p.programa_id) ? '☑' : '☐'} ${esc(p.programa_nome)}</b>
+          <small>${p.origem === 'ITEM' ? 'ligado ao item' : 'por área (confira)'} · ${esc(p.habilidade || p.nivel || '')} · ${esc((p.item_texto || '').slice(0, 90))}${p.resposta_pct > 0 ? ` · pontuou ${p.resposta_pct}%` : ' · não pontuou'}</small></div></div>`).join('')}</div></div>`).join('')}`;
+    app.querySelectorAll('.prop').forEach(b => b.onclick = () => { const k = b.dataset.pg; escolhidos.has(k) ? escolhidos.delete(k) : escolhidos.add(k); desenhar(); });
+    $('#aplicar', app).onclick = async () => {
+      if (!escolhidos.size) return toast('Marque pelo menos um objetivo.');
+      const { data: n, error: e2 } = await sb.rpc('criar_objetivos_das_propostas',
+        { p_paciente: av.paciente_id, p_avaliacao: avaliacaoId, p_programas: [...escolhidos] });
+      if (e2) return toast(e2.message, 6000);
+      toast(`${n} objetivo(s) adicionado(s) nas subpastas.`, 4000);
+      ir('#/paciente/' + av.paciente_id + '/avaliacoes');
+    };
+  };
+  desenhar();
+}
 
 // ----------------------------------------------------------------- catálogo (consulta)
 rotas.catalogo = async (app) => {
