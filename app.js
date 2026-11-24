@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.3.0',
+  versao: '0.3.1',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -369,7 +369,7 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
     const porFase = (f) => objs.filter(o => o.fase === f);
     const bloco = (titulo, lista) => lista.length ? `<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink3)">${titulo} <span class="tag">${lista.length}</span></h4>${lista.map(cardObjetivo).join('')}` : '';
     const emAndamento = (pasta.sessoes || []).find(x => x.subpasta_id === sub?.id && x.situacao === 'INICIADA' && x.profissional_id === estado.eu.id);
-    const treinaveis = objs.filter(o => o.fase !== 'ADQUIRIDO').length;
+    const treinaveis = objs.length;
     corpo = `<div class="phead" style="margin-bottom:10px"><div><h3>${esc(e.nome)}</h3><p class="muted">${objs.length} objetivo(s) ativo(s)</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
       ${estado.eu.perfil !== 'recepcao' && treinaveis ? (emAndamento ? `<button class="btn" id="sessao" data-id="${emAndamento.id}">▶ Continuar sessão de ${fmtData(emAndamento.data_sessao)}</button>` : '<button class="btn" id="sessao">▶ Iniciar sessão</button>') : ''}
@@ -553,16 +553,22 @@ function niveisDo(o) {
   return estado.niveisPadrao.filter(n => n.tipo_registro_id === o.tipo_registro_id).sort((a, b) => a.ordem - b.ordem);
 }
 
-// quais alvos entram hoje: linha de base e intervenção sempre; manutenção/generalização só se estiver agendada para hoje ou atrasada
+// quais alvos entram hoje:
+// - treino (linha de base e intervenção): até "alvos por sessão";
+// - manutenção/generalização, e alvo já adquirido com manutenção marcada: entram além do limite,
+//   mas só quando a data programada é hoje ou já passou.
 function alvosDeHoje(o, agenda) {
-  const alvos = (o.alvo || []).filter(a => a.ativo && a.fase !== 'ADQUIRIDO').sort((a, b) => a.ordem - b.ordem);
+  const alvos = (o.alvo || []).filter(a => a.ativo).sort((a, b) => a.ordem - b.ordem);
   const h = hoje();
-  const prontos = alvos.filter(a => {
-    if (a.fase === 'LINHA_BASE' || a.fase === 'INTERVENCAO') return true;
-    const ag = (agenda || []).filter(g => g.alvo_id === a.id && !g.data_realizada);
-    return ag.length ? ag.some(g => g.data_programada <= h) : true; // sem agenda ainda (motor de fases vem depois): entra
+  const pendente = (a) => (agenda || []).filter(g => g.alvo_id === a.id && !g.data_realizada);
+  const treino = alvos.filter(a => a.fase === 'LINHA_BASE' || a.fase === 'INTERVENCAO').slice(0, Math.max(1, o.alvos_por_sessao || 1));
+  const manut = alvos.filter(a => {
+    if (a.fase === 'LINHA_BASE' || a.fase === 'INTERVENCAO') return false;
+    const ag = pendente(a);
+    if (a.fase === 'ADQUIRIDO') return ag.some(g => g.data_programada <= h);
+    return ag.length ? ag.some(g => g.data_programada <= h) : true;
   });
-  return prontos.slice(0, Math.max(1, o.alvos_por_sessao || 1));
+  return [...treino, ...manut];
 }
 
 async function iniciarSessao(p, eid, subpastas) {
@@ -577,7 +583,8 @@ async function iniciarSessao(p, eid, subpastas) {
   ir('#/sessao/' + ses.id);
 }
 function montarObjetivosSessao(sub) {
-  return (sub.objetivo || []).filter(o => o.ativo && o.fase !== 'ADQUIRIDO').map(o => ({ ...o, especialidade_id: sub.especialidade_id, niveis: niveisDo(o) }));
+  // objetivo adquirido ainda entra se tiver manutenção pendente — alvosDeHoje decide o que aparece
+  return (sub.objetivo || []).filter(o => o.ativo).map(o => ({ ...o, especialidade_id: sub.especialidade_id, niveis: niveisDo(o) }));
 }
 
 rotas.sessao = async (app, id) => {
@@ -623,7 +630,8 @@ rotas.sessao = async (app, id) => {
             return `<button class="tent ${cls}${on}" data-alvo="${a.id}" data-n="${n}" ${podeEditar ? '' : 'disabled'} title="tentativa ${n}">${t ? esc(t.sigla_ajuda) : n}</button>`;
           }).join('');
           const seletor = aberto && aberto.alvoId === a.id ? `<div class="niveis">${o.niveis.map(nv => `<button class="nv ${nv.grau === 'INDEPENDENTE' ? 'ind' : nv.grau === 'ERRO' ? 'err' : ''}" data-sigla="${esc(nv.sigla)}" data-grau="${nv.grau}" data-alvo="${a.id}" data-n="${aberto.numero}">${esc(nv.sigla)}<small>${rotGrau(nv.grau)}</small></button>`).join('')}<button class="nv limpar" data-alvo="${a.id}" data-n="${aberto.numero}" data-limpar>apagar</button></div>` : '';
-          return `<div class="alvo-linha"><div class="alvo-nome"><span class="tag ${FASES[a.fase][1]}" style="padding:1px 7px">${FASE_CURTA[a.fase] || ''}</span> ${esc(a.nome)}${pA !== null ? ` <span class="muted">· ${pA}%</span>` : ''}</div><div class="tents">${cels}</div>${seletor}</div>`;
+          const emManut = ['MANUTENCAO', 'GENERALIZACAO'].includes(a.fase) || (a.fase === 'ADQUIRIDO' && (pk.agenda || []).some(g => g.alvo_id === a.id && !g.data_realizada));
+          return `<div class="alvo-linha"><div class="alvo-nome"><span class="tag ${FASES[a.fase][1]}" style="padding:1px 7px">${FASE_CURTA[a.fase] || ''}</span>${emManut ? ' <span class="tag w" style="padding:1px 7px">manutenção</span>' : ''} ${esc(a.nome)}${pA !== null ? ` <span class="muted">· ${pA}%</span>` : ''}</div><div class="tents">${cels}</div>${seletor}</div>`;
         }).join('')}
         <details style="margin-top:6px;font-size:12.5px"><summary>Procedimento</summary>${[['Sd', o.instrucao_sd], ['Ensino', o.procedimento_ensino], ['Dica', o.passo_dica], ['Correção', o.procedimento_correcao], ['Critério', o.criterio_aprendizado], ['Materiais', o.materiais]].filter(x => x[1]).map(x => `<div class="campo"><b>${x[0]}</b>${esc(x[1])}</div>`).join('') || '<span class="muted">—</span>'}</details>
       </div>`;
