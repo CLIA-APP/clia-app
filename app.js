@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.2.1',
+  versao: '0.3.0',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -331,7 +331,7 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
     const [p, eq, sub, resp, ses] = await Promise.all([
       sb.from('paciente').select('*').eq('id', id).single(),
       sb.from('equipe_paciente').select('profissional_id,especialidade_id,ativo,profissional(nome,perfil_id,especialidade_id)').eq('paciente_id', id).eq('ativo', true),
-      sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,objetivo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,alvos_por_sessao,tentativas_alvo,ativo,alvo(id,nome,fase,ordem,ativo),objetivo_nivel_ajuda(ordem,sigla,grau))').eq('paciente_id', id).eq('ativo', true),
+      sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,objetivo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,alvos_por_sessao,tentativas_alvo,ativo,alvo(id,nome,fase,ordem,ativo,data_adquirido,alvo_evolucao(resultado,fase_anterior,fase_nova,motivo,calculado_em),manutencao_agenda(data_programada,data_realizada)),objetivo_nivel_ajuda(ordem,sigla,grau))').eq('paciente_id', id).eq('ativo', true),
       sb.from('responsavel').select('*').eq('paciente_id', id),
       sb.from('sessao').select('id,subpasta_id,profissional_id,data_sessao,situacao,falta,observacoes,profissional(nome)').eq('paciente_id', id).order('data_sessao', { ascending: false }).limit(60),
     ]);
@@ -397,7 +397,7 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
   const ao = $('#addobj', app); if (ao) ao.onclick = () => escolherPrograma(p, aba.replace('sub-', ''), subpastas);
   const bs = $('#sessao', app); if (bs) bs.onclick = () => bs.dataset.id ? ir('#/sessao/' + bs.dataset.id) : iniciarSessao(p, aba.replace('sub-', ''), subpastas);
   app.querySelectorAll('[data-ver-sessao]').forEach(b => b.onclick = () => ir('#/sessao/' + b.dataset.verSessao));
-  app.querySelectorAll('[data-fase]').forEach(b => b.onclick = () => mudarFase(b.dataset.fase, b.dataset.obj));
+  app.querySelectorAll('[data-fase-menu]').forEach(b => b.onclick = () => menuFase(b.dataset.faseMenu));
 };
 function contadorSub(subpastas, eid) {
   const n = (subpastas.find(s => s.especialidade_id === eid)?.objetivo || []).filter(o => o.ativo && o.fase !== 'ADQUIRIDO').length;
@@ -409,19 +409,30 @@ function cardObjetivo(o) {
   const alvos = (o.alvo || []).filter(a => a.ativo).sort((a, b) => a.ordem - b.ordem);
   const tipo = estado.tipos.find(t => t.id === o.tipo_registro_id);
   const campo = (rot, v) => v ? `<div class="campo"><b>${rot}</b>${esc(v)}</div>` : '';
-  const prox = { LINHA_BASE: 'INTERVENCAO', INTERVENCAO: 'MANUTENCAO', MANUTENCAO: 'ADQUIRIDO' }[o.fase];
+  const hist = alvos.flatMap(a => (a.alvo_evolucao || []).map(e => ({ ...e, alvo: a.nome }))).sort((x, y) => y.calculado_em.localeCompare(x.calculado_em));
+  const proxManut = (a) => { const g = (a.manutencao_agenda || []).filter(m => !m.data_realizada).sort((x, y) => x.data_programada.localeCompare(y.data_programada))[0]; return g ? ` · próx. ${fmtData(g.data_programada)}` : ''; };
+  const ultima = hist[0];
   return `<div class="obj"><div class="cab"><div><h5>${esc(o.nome)}</h5>
       <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap"><span class="tag ${FASES[o.fase][1]}">${FASES[o.fase][0]}</span>${tipo ? `<span class="tag">${esc(tipo.chave)}</span>` : ''}<span class="tag">${o.alvos_por_sessao} alvo(s)/sessão · ${o.tentativas_alvo} tent.</span></div></div>
-      ${possoConfigurar() && prox ? `<button class="btn ghost sm" data-fase="${prox}" data-obj="${o.id}">→ ${FASES[prox][0]}</button>` : ''}</div>
-    ${alvos.length ? `<div class="alvos">${alvos.map(a => `<span class="tag ${FASES[a.fase][1]}" title="${FASES[a.fase][0]}">${esc(a.nome)}</span>`).join('')}</div>` : ''}
-    <details><summary>Ver procedimento</summary>${campo('Objetivo', o.objetivo)}${campo('Instrução (Sd)', o.instrucao_sd)}${campo('Procedimento de ensino', o.procedimento_ensino)}${campo('Passo da dica', o.passo_dica)}${campo('Correção', o.procedimento_correcao)}${campo('Critério', o.criterio_aprendizado)}${campo('Materiais', o.materiais)}</details></div>`;
+      ${possoConfigurar() ? `<button class="btn ghost sm" data-fase-menu="${o.id}">Mudar fase</button>` : ''}</div>
+    ${alvos.length ? `<div class="alvos">${alvos.map(a => `<span class="tag ${FASES[a.fase][1]}" title="${FASES[a.fase][0]}${a.fase === 'MANUTENCAO' ? proxManut(a) : ''}">${esc(a.nome)}${a.fase === 'MANUTENCAO' ? proxManut(a) : ''}</span>`).join('')}</div>` : ''}
+    ${ultima ? `<div class="evol ${ultima.resultado === 'REGREDIU' ? 'ruim' : ''}"><b>${fmtData(ultima.calculado_em.slice(0, 10))} · ${esc(ultima.alvo)}</b> ${esc(ultima.motivo)}</div>` : ''}
+    <details><summary>Ver procedimento${hist.length ? ' e histórico' : ''}</summary>${campo('Objetivo', o.objetivo)}${campo('Instrução (Sd)', o.instrucao_sd)}${campo('Procedimento de ensino', o.procedimento_ensino)}${campo('Passo da dica', o.passo_dica)}${campo('Correção', o.procedimento_correcao)}${campo('Critério', o.criterio_aprendizado)}${campo('Materiais', o.materiais)}
+      ${hist.length ? `<div class="campo"><b>Histórico de fases</b>${hist.slice(0, 12).map(e => `<div class="evol ${e.resultado === 'REGREDIU' ? 'ruim' : ''}" style="margin-top:4px"><b>${fmtData(e.calculado_em.slice(0, 10))} · ${esc(e.alvo)} · ${FASES[e.fase_anterior]?.[0] || e.fase_anterior} → ${FASES[e.fase_nova]?.[0] || e.fase_nova}</b> ${esc(e.motivo)}</div>`).join('')}</div>` : ''}</details></div>`;
 }
-async function mudarFase(fase, objId) {
-  if (!confirm(`Mover este objetivo (e todos os alvos) para ${FASES[fase][0]}?`)) return;
-  const r1 = await gravar('objetivo', { id: objId, fase }, 'update');
-  const { data: alvos } = await sb.from('alvo').select('id').eq('objetivo_id', objId).eq('ativo', true);
-  for (const a of alvos || []) await gravar('alvo', { id: a.id, fase, ...(fase === 'ADQUIRIDO' ? { data_adquirido: hoje() } : {}) }, 'update');
-  toast(r1.pendente ? 'Alteração guardada para sincronizar.' : 'Fase alterada.'); render();
+function menuFase(objId) {
+  modal(`<h3>Mudar fase do objetivo</h3><p class="muted" style="margin:0 0 10px;font-size:13px">Normalmente o app muda a fase sozinho pelo critério ao finalizar a sessão. Use aqui só quando precisar forçar; fica registrado no histórico com seu nome.</p>
+    <form class="form" id="fm">
+      <div><label>Nova fase (todos os alvos ativos)</label><select name="fase">${Object.entries(FASES).map(([k, v]) => `<option value="${k}">${v[0]}</option>`).join('')}</select></div>
+      <div><label>Motivo</label><input name="motivo" placeholder="ex.: supervisão decidiu avançar" required></div>
+      <div class="acoes"><button type="button" class="btn ghost" data-fechar>Cancelar</button><button class="btn">Mudar</button></div></form>`);
+  $('#fm').onsubmit = async (ev) => {
+    ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+    if (!online()) return toast('Mudança manual de fase precisa de internet.');
+    const { data, error } = await sb.rpc('mudar_fase_manual', { p_objetivo: objId, p_fase: f.fase, p_motivo: f.motivo });
+    if (error) return toast(error.message, 5000);
+    fecharModal(); toast(`${data} alvo(s) alterado(s).`); render();
+  };
 }
 
 function formResponsavel(pacienteId) {
@@ -666,8 +677,16 @@ rotas.sessao = async (app, id) => {
           if (g && g.id) await gravar('manutencao_agenda', { id: g.id, data_realizada: hoje() }, 'update');
         }
       }
-      fecharModal(); toast(r.pendente ? 'Sessão guardada; sincroniza quando a internet voltar.' : 'Sessão finalizada.');
-      ir('#/paciente/' + ses.paciente_id + '/sub-' + (pk.especialidade_id || ''));
+      fecharModal();
+      const voltar = () => ir('#/paciente/' + ses.paciente_id + '/sub-' + (pk.especialidade_id || ''));
+      if (r.pendente || falta) { toast(r.pendente ? 'Sessão guardada; sincroniza quando a internet voltar.' : 'Falta registrada.'); return voltar(); }
+      // o motor de fases rodou no servidor ao finalizar: mostra o que decidiu
+      const { data: dec } = await sb.from('alvo_evolucao').select('resultado,fase_anterior,fase_nova,motivo,alvo(nome)').eq('sessao_id', id).order('calculado_em');
+      if (!dec || !dec.length) { toast('Sessão finalizada. Nenhuma mudança de fase.'); return voltar(); }
+      modal(`<h3>Sessão finalizada — ${dec.length} decisão(ões) do critério</h3>
+        ${dec.map(e => `<div class="evol ${e.resultado === 'REGREDIU' ? 'ruim' : ''}" style="margin-bottom:6px"><b>${esc(e.alvo?.nome || '')} · ${FASES[e.fase_anterior]?.[0] || e.fase_anterior} → ${FASES[e.fase_nova]?.[0] || e.fase_nova}</b> ${esc(e.motivo)}</div>`).join('')}
+        <div class="acoes"><button class="btn" id="okdec">Entendi</button></div>`);
+      $('#okdec').onclick = () => { fecharModal(); voltar(); };
     };
   };
   desenhar();
