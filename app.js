@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.1.2',
+  versao: '0.2.0',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -147,25 +147,26 @@ async function ler(chave, consulta) {
 }
 
 // ----------------------------------------------------------------- estado
-const estado = { eu: null, especialidades: [], unidades: [], tipos: [], perfis: [], regras: {} };
+const estado = { eu: null, especialidades: [], unidades: [], tipos: [], perfis: [], regras: {}, niveisPadrao: [] };
 const souDirecao = () => estado.eu?.perfil === 'direcao';
 const possoCadastrar = () => ['direcao', 'supervisor', 'recepcao'].includes(estado.eu?.perfil);
 const possoConfigurar = () => ['direcao', 'supervisor', 'terapeuta'].includes(estado.eu?.perfil);
 
 async function carregarBase() {
   const base = await ler('base', async () => {
-    const [e, u, t, p, r] = await Promise.all([
+    const [e, u, t, p, r, n] = await Promise.all([
       sb.from('especialidade').select('*').order('ordem'),
       sb.from('unidade').select('*').eq('ativo', true).order('nome'),
       sb.from('tipo_registro').select('*').order('ordem'),
       sb.from('perfil').select('*'),
       sb.from('regra_clinica').select('chave,valor'),
+      sb.from('nivel_ajuda').select('tipo_registro_id,ordem,sigla,grau').is('programa_id', null).order('ordem'),
     ]);
     const error = e.error || u.error || t.error || p.error || r.error;
-    return { data: { especialidades: e.data, unidades: u.data, tipos: t.data, perfis: p.data, regras: r.data }, error };
+    return { data: { especialidades: e.data, unidades: u.data, tipos: t.data, perfis: p.data, regras: r.data, niveis: n.data || [] }, error };
   });
   if (base) {
-    Object.assign(estado, { especialidades: base.especialidades, unidades: base.unidades, tipos: base.tipos, perfis: base.perfis });
+    Object.assign(estado, { especialidades: base.especialidades, unidades: base.unidades, tipos: base.tipos, perfis: base.perfis, niveisPadrao: base.niveis || [] });
     estado.regras = Object.fromEntries((base.regras || []).map(x => [x.chave, x.valor]));
   }
 }
@@ -327,13 +328,14 @@ function formPaciente(p = null) {
 rotas.paciente = async (app, id, aba = 'ficha') => {
   app.innerHTML = shell('<div class="spinner"></div>', 'pacientes');
   const pasta = await ler('pasta:' + id, async () => {
-    const [p, eq, sub, resp] = await Promise.all([
+    const [p, eq, sub, resp, ses] = await Promise.all([
       sb.from('paciente').select('*').eq('id', id).single(),
       sb.from('equipe_paciente').select('profissional_id,especialidade_id,ativo,profissional(nome,perfil_id,especialidade_id)').eq('paciente_id', id).eq('ativo', true),
-      sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,objetivo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,alvos_por_sessao,tentativas_alvo,ativo,alvo(id,nome,fase,ordem,ativo))').eq('paciente_id', id).eq('ativo', true),
+      sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,objetivo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,alvos_por_sessao,tentativas_alvo,ativo,alvo(id,nome,fase,ordem,ativo),objetivo_nivel_ajuda(ordem,sigla,grau))').eq('paciente_id', id).eq('ativo', true),
       sb.from('responsavel').select('*').eq('paciente_id', id),
+      sb.from('sessao').select('id,subpasta_id,profissional_id,data_sessao,situacao,falta,observacoes,profissional(nome)').eq('paciente_id', id).order('data_sessao', { ascending: false }).limit(60),
     ]);
-    return { data: { paciente: p.data, equipe: eq.data || [], subpastas: sub.data || [], responsaveis: resp.data || [] }, error: p.error };
+    return { data: { paciente: p.data, equipe: eq.data || [], subpastas: sub.data || [], responsaveis: resp.data || [], sessoes: ses.data || [] }, error: p.error };
   });
   if (!pasta?.paciente) { $('.main', app).innerHTML = '<p class="erro">Paciente não encontrado ou sem permissão.</p>'; return; }
   const { paciente: p, equipe, subpastas, responsaveis } = pasta;
@@ -361,12 +363,18 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
         ${['direcao','supervisor'].includes(estado.eu.perfil) ? `<button class="btn ghost sm" data-rm="${e.profissional_id}">remover</button>` : ''}</div>`).join('') + '</div>' : '<p class="muted">Ninguém na equipe ainda. Só quem está na equipe (ou a direção/supervisão) vê esta pasta.</p>'}</div>`;
   } else {
     const eid = aba.replace('sub-', ''), e = esp(eid);
+    if (!e) { ir('#/paciente/' + id + '/ficha'); return; }
     const sub = subpastas.find(s => s.especialidade_id === eid);
     const objs = (sub?.objetivo || []).filter(o => o.ativo);
     const porFase = (f) => objs.filter(o => o.fase === f);
     const bloco = (titulo, lista) => lista.length ? `<h4 style="margin:14px 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink3)">${titulo} <span class="tag">${lista.length}</span></h4>${lista.map(cardObjetivo).join('')}` : '';
+    const emAndamento = (pasta.sessoes || []).find(x => x.subpasta_id === sub?.id && x.situacao === 'INICIADA' && x.profissional_id === estado.eu.id);
+    const treinaveis = objs.filter(o => o.fase !== 'ADQUIRIDO').length;
     corpo = `<div class="phead" style="margin-bottom:10px"><div><h3>${esc(e.nome)}</h3><p class="muted">${objs.length} objetivo(s) ativo(s)</p></div>
-      ${possoConfigurar() ? '<button class="btn" id="addobj">+ Objetivo do catálogo</button>' : ''}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${estado.eu.perfil !== 'recepcao' && treinaveis ? (emAndamento ? `<button class="btn" id="sessao" data-id="${emAndamento.id}">▶ Continuar sessão de ${fmtData(emAndamento.data_sessao)}</button>` : '<button class="btn" id="sessao">▶ Iniciar sessão</button>') : ''}
+      ${possoConfigurar() ? '<button class="btn ghost" id="addobj">+ Objetivo do catálogo</button>' : ''}</div></div>
+      ${listaSessoes((pasta.sessoes || []).filter(x => x.subpasta_id === sub?.id))}
       ${objs.length ? bloco('Linha de base', porFase('LINHA_BASE')) + bloco('Intervenção', porFase('INTERVENCAO')) + bloco('Manutenção', porFase('MANUTENCAO')) + bloco('Generalização', porFase('GENERALIZACAO')) + bloco('Adquiridos', porFase('ADQUIRIDO')) : '<p class="muted">Nenhum objetivo nesta subpasta. Use "+ Objetivo do catálogo" ou aplique uma avaliação (em breve).</p>'}`;
   }
 
@@ -387,6 +395,8 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
     render();
   });
   const ao = $('#addobj', app); if (ao) ao.onclick = () => escolherPrograma(p, aba.replace('sub-', ''), subpastas);
+  const bs = $('#sessao', app); if (bs) bs.onclick = () => bs.dataset.id ? ir('#/sessao/' + bs.dataset.id) : iniciarSessao(p, aba.replace('sub-', ''), subpastas);
+  app.querySelectorAll('[data-ver-sessao]').forEach(b => b.onclick = () => ir('#/sessao/' + b.dataset.verSessao));
   app.querySelectorAll('[data-fase]').forEach(b => b.onclick = () => mudarFase(b.dataset.fase, b.dataset.obj));
 };
 function contadorSub(subpastas, eid) {
@@ -515,6 +525,153 @@ async function confirmarObjetivo(p, eid, subpastas, programaId) {
     fecharModal(); toast(r.pendente ? 'Objetivo guardado no aparelho; sincroniza depois.' : 'Objetivo adicionado.'); render();
   };
 }
+
+// ----------------------------------------------------------------- sessão (registro de tentativas)
+function listaSessoes(ss) {
+  if (!ss.length) return '';
+  const rot = { CRIADA: 'criada', INICIADA: 'em andamento', FINALIZADA: 'finalizada', CANCELADA: 'cancelada' };
+  return `<details class="card" style="margin-bottom:14px;padding:10px 14px"><summary style="cursor:pointer;font-weight:600;font-size:13px">Sessões (${ss.length})</summary>
+    <div class="lista" style="margin-top:10px">${ss.slice(0, 20).map(x => `<div class="it" data-ver-sessao="${x.id}"><div><b>${fmtData(x.data_sessao)}${x.falta ? ' · falta' : ''}</b><small>${esc(x.profissional?.nome || '')} · ${rot[x.situacao] || x.situacao}${x.observacoes ? ' · ' + esc(x.observacoes.slice(0, 60)) : ''}</small></div><span class="tag ${x.situacao === 'INICIADA' ? 'w' : ''}">${x.situacao === 'INICIADA' ? 'continuar' : 'abrir'}</span></div>`).join('')}</div></details>`;
+}
+
+// níveis de ajuda de um objetivo: os dele ou, se não tiver, os padrão do tipo de registro
+function niveisDo(o) {
+  const prop = (o.objetivo_nivel_ajuda || []).slice().sort((a, b) => a.ordem - b.ordem);
+  if (prop.length) return prop;
+  return estado.niveisPadrao.filter(n => n.tipo_registro_id === o.tipo_registro_id).sort((a, b) => a.ordem - b.ordem);
+}
+
+// quais alvos entram hoje: linha de base e intervenção sempre; manutenção/generalização só se estiver agendada para hoje ou atrasada
+function alvosDeHoje(o, agenda) {
+  const alvos = (o.alvo || []).filter(a => a.ativo && a.fase !== 'ADQUIRIDO').sort((a, b) => a.ordem - b.ordem);
+  const h = hoje();
+  const prontos = alvos.filter(a => {
+    if (a.fase === 'LINHA_BASE' || a.fase === 'INTERVENCAO') return true;
+    const ag = (agenda || []).filter(g => g.alvo_id === a.id && !g.data_realizada);
+    return ag.length ? ag.some(g => g.data_programada <= h) : true; // sem agenda ainda (motor de fases vem depois): entra
+  });
+  return prontos.slice(0, Math.max(1, o.alvos_por_sessao || 1));
+}
+
+async function iniciarSessao(p, eid, subpastas) {
+  let sub = subpastas.find(s => s.especialidade_id === eid);
+  if (!sub) return toast('Esta subpasta ainda não tem objetivos.');
+  const ses = { id: uuid(), paciente_id: p.id, subpasta_id: sub.id, profissional_id: estado.eu.id, data_sessao: hoje(),
+    situacao: 'INICIADA', inicio: new Date().toISOString(), dispositivo_id: dispositivo };
+  const r = await gravar('sessao', ses);
+  if (!r.ok) return toast('Não foi possível iniciar: ' + r.erro, 6000);
+  // guarda o pacote da sessão no aparelho para funcionar sem internet
+  await DB.set('sessao:' + ses.id, { sessao: ses, paciente: { id: p.id, nome: p.nome }, especialidade_id: sub.especialidade_id, objetivos: montarObjetivosSessao(sub), tentativas: [], agenda: [] });
+  ir('#/sessao/' + ses.id);
+}
+function montarObjetivosSessao(sub) {
+  return (sub.objetivo || []).filter(o => o.ativo && o.fase !== 'ADQUIRIDO').map(o => ({ ...o, especialidade_id: sub.especialidade_id, niveis: niveisDo(o) }));
+}
+
+rotas.sessao = async (app, id) => {
+  app.innerHTML = shell('<div class="spinner"></div>', 'pacientes');
+  // pacote: tenta o servidor (sessão + objetivos da subpasta + tentativas já feitas); sem rede, usa o guardado
+  let pk = await ler('sessao:' + id, async () => {
+    const { data: ses, error } = await sb.from('sessao').select('*').eq('id', id).single();
+    if (error) return { error };
+    const [{ data: pac }, { data: sub }, { data: tent }] = await Promise.all([
+      sb.from('paciente').select('id,nome').eq('id', ses.paciente_id).single(),
+      sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,alvos_por_sessao,tentativas_alvo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,ativo,alvo(id,nome,fase,ordem,ativo),objetivo_nivel_ajuda(ordem,sigla,grau))').eq('id', ses.subpasta_id).single(),
+      sb.from('tentativa').select('id,alvo_id,numero,sigla_ajuda,independente,erro').eq('sessao_id', id),
+    ]);
+    const alvoIds = (sub?.objetivo || []).flatMap(o => (o.alvo || []).map(a => a.id));
+    const { data: agenda } = alvoIds.length ? await sb.from('manutencao_agenda').select('id,alvo_id,data_programada,data_realizada').in('alvo_id', alvoIds).is('data_realizada', null) : { data: [] };
+    return { data: { sessao: ses, paciente: pac, especialidade_id: sub?.especialidade_id, objetivos: montarObjetivosSessao(sub || {}), tentativas: tent || [], agenda: agenda || [] }, error: null };
+  });
+  if (!pk) { $('.main', app).innerHTML = '<p class="erro">Sessão não encontrada neste aparelho e sem conexão.</p>'; return; }
+  const { sessao: ses, paciente: pac } = pk;
+  const fechada = ses.situacao === 'FINALIZADA' || ses.situacao === 'CANCELADA';
+  const minha = ses.profissional_id === estado.eu.id || ['direcao', 'supervisor'].includes(estado.eu.perfil);
+  const podeEditar = !fechada && minha;
+  const tent = (alvoId, n) => pk.tentativas.find(t => t.alvo_id === alvoId && t.numero === n);
+  const pct = (alvoIds) => { const ts = pk.tentativas.filter(t => alvoIds.includes(t.alvo_id)); return ts.length ? Math.round(100 * ts.filter(t => t.independente).length / ts.length) : null; };
+  const tiposTent = ['TDE', 'TDI', 'AT', 'EN'];
+  let aberto = null; // {alvoId, numero} com o seletor de nível aberto
+
+  const desenhar = () => {
+    const blocos = pk.objetivos.map(o => {
+      const tipo = estado.tipos.find(t => t.id === o.tipo_registro_id);
+      if (tipo && !tiposTent.includes(tipo.chave)) return `<div class="obj"><h5>${esc(o.nome)}</h5><p class="muted" style="font-size:12.5px;margin:4px 0 0">Registro de ${esc(tipo.nome)} ainda não disponível no app.</p></div>`;
+      const alvos = alvosDeHoje(o, pk.agenda);
+      if (!alvos.length) return '';
+      const pO = pct(alvos.map(a => a.id));
+      return `<div class="obj"><div class="cab"><div><h5>${esc(o.nome)}</h5>
+          <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap"><span class="tag ${FASES[o.fase][1]}">${FASES[o.fase][0]}</span><span class="tag">${o.tentativas_alvo} tent./alvo</span>${pO !== null ? `<span class="tag ${pO >= (+estado.regras.CRIT_PCT || 80) ? 'b' : ''}">${pO}% independente</span>` : ''}</div></div></div>
+        ${alvos.map(a => {
+          const pA = pct([a.id]);
+          const cels = Array.from({ length: o.tentativas_alvo || 3 }, (_, i) => {
+            const n = i + 1, t = tent(a.id, n);
+            const cls = !t ? '' : t.independente ? 'ind' : t.erro ? 'err' : 'aj';
+            const on = aberto && aberto.alvoId === a.id && aberto.numero === n ? ' on' : '';
+            return `<button class="tent ${cls}${on}" data-alvo="${a.id}" data-n="${n}" ${podeEditar ? '' : 'disabled'} title="tentativa ${n}">${t ? esc(t.sigla_ajuda) : n}</button>`;
+          }).join('');
+          const seletor = aberto && aberto.alvoId === a.id ? `<div class="niveis">${o.niveis.map(nv => `<button class="nv ${nv.grau === 'INDEPENDENTE' ? 'ind' : nv.grau === 'ERRO' ? 'err' : ''}" data-sigla="${esc(nv.sigla)}" data-grau="${nv.grau}" data-alvo="${a.id}" data-n="${aberto.numero}">${esc(nv.sigla)}<small>${rotGrau(nv.grau)}</small></button>`).join('')}<button class="nv limpar" data-alvo="${a.id}" data-n="${aberto.numero}" data-limpar>apagar</button></div>` : '';
+          return `<div class="alvo-linha"><div class="alvo-nome"><span class="tag ${FASES[a.fase][1]}" style="padding:1px 7px">${FASES[a.fase][0].slice(0, 5)}</span> ${esc(a.nome)}${pA !== null ? ` <span class="muted">· ${pA}%</span>` : ''}</div><div class="tents">${cels}</div>${seletor}</div>`;
+        }).join('')}
+        <details style="margin-top:6px;font-size:12.5px"><summary>Procedimento</summary>${[['Sd', o.instrucao_sd], ['Ensino', o.procedimento_ensino], ['Dica', o.passo_dica], ['Correção', o.procedimento_correcao], ['Critério', o.criterio_aprendizado], ['Materiais', o.materiais]].filter(x => x[1]).map(x => `<div class="campo"><b>${x[0]}</b>${esc(x[1])}</div>`).join('') || '<span class="muted">—</span>'}</details>
+      </div>`;
+    }).join('');
+    const totalT = pk.tentativas.length, indT = pk.tentativas.filter(t => t.independente).length;
+    $('.main', app).innerHTML = `
+      <div class="phead"><div><p style="margin:0"><button class="link" onclick="location.hash='#/paciente/${ses.paciente_id}/sub-${pk.especialidade_id || ''}'">← ${esc(pac?.nome || 'Paciente')}</button></p>
+        <h1>Sessão de ${fmtData(ses.data_sessao)}</h1><p>${fechada ? (ses.falta ? 'Falta registrada' : 'Finalizada') : 'Em andamento'} · ${totalT} tentativa(s)${totalT ? ` · ${Math.round(100 * indT / totalT)}% independentes` : ''}</p></div>
+        ${podeEditar ? `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" id="falta">Falta</button><button class="btn" id="fim">Finalizar sessão</button></div>` : ''}</div>
+      ${ses.observacoes ? `<div class="card" style="margin-bottom:12px"><b style="font-size:12px;color:var(--ink3)">OBSERVAÇÕES</b><div>${esc(ses.observacoes)}</div>${ses.fatores_externos ? `<div class="muted" style="font-size:12.5px;margin-top:4px">Fatores externos: ${esc(ses.fatores_externos)}</div>` : ''}</div>` : ''}
+      ${podeEditar ? '<p class="muted" style="font-size:12.5px;margin:0 0 10px">Toque na tentativa e escolha o nível de ajuda. Tudo é salvo na hora (e sincroniza depois se faltar internet).</p>' : ''}
+      ${blocos || '<p class="muted">Nenhum alvo programado para hoje nesta subpasta.</p>'}`;
+    app.querySelectorAll('.tent').forEach(b => b.onclick = () => { const k = { alvoId: b.dataset.alvo, numero: +b.dataset.n }; aberto = (aberto && aberto.alvoId === k.alvoId && aberto.numero === k.numero) ? null : k; desenhar(); });
+    app.querySelectorAll('.nv').forEach(b => b.onclick = () => registrar(b.dataset.alvo, +b.dataset.n, b.hasAttribute('data-limpar') ? null : { sigla: b.dataset.sigla, grau: b.dataset.grau }));
+    const bf = $('#fim', app); if (bf) bf.onclick = () => finalizar(false);
+    const bx = $('#falta', app); if (bx) bx.onclick = () => finalizar(true);
+  };
+
+  const registrar = async (alvoId, numero, nv) => {
+    const atual = tent(alvoId, numero);
+    if (!nv) {
+      if (atual) { pk.tentativas = pk.tentativas.filter(t => t !== atual); await DB.set('sessao:' + id, pk); sb.from('tentativa').delete().eq('id', atual.id).then(() => {}); }
+      aberto = null; desenhar(); return;
+    }
+    const t = { id: atual?.id || uuid(), sessao_id: id, alvo_id: alvoId, numero, sigla_ajuda: nv.sigla, independente: nv.grau === 'INDEPENDENTE', erro: nv.grau === 'ERRO', dispositivo_id: dispositivo };
+    if (atual) Object.assign(atual, t); else pk.tentativas.push(t);
+    await DB.set('sessao:' + id, pk);
+    // próxima tentativa do mesmo alvo já fica aberta, para registrar em sequência
+    const max = (pk.objetivos.find(o => (o.alvo || []).some(a => a.id === alvoId))?.tentativas_alvo) || 3;
+    aberto = numero < max ? { alvoId, numero: numero + 1 } : null;
+    desenhar();
+    const r = await gravar('tentativa', t);
+    if (!r.ok) toast('Tentativa não gravada: ' + r.erro, 5000);
+  };
+
+  const finalizar = (falta) => {
+    modal(`<h3>${falta ? 'Registrar falta' : 'Finalizar sessão'}</h3><form class="form" id="ff">
+      ${falta ? '<p class="muted" style="margin:0;font-size:13px">A sessão fica registrada como falta do paciente, sem tentativas.</p>' : ''}
+      <div><label>Observações${falta ? ' (motivo, se souber)' : ' da sessão'}</label><textarea name="observacoes"></textarea></div>
+      ${falta ? '' : '<div><label>Fatores externos (sono, medicação, doença…)</label><input name="fatores_externos"></div>'}
+      <div class="acoes"><button type="button" class="btn ghost" data-fechar>Voltar</button><button class="btn">${falta ? 'Registrar falta' : 'Finalizar'}</button></div></form>`);
+    $('#ff').onsubmit = async (ev) => {
+      ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+      const up = { id, situacao: 'FINALIZADA', falta: !!falta, fim: new Date().toISOString(), observacoes: f.observacoes || null, fatores_externos: f.fatores_externos || null };
+      Object.assign(ses, up); await DB.set('sessao:' + id, pk);
+      const r = await gravar('sessao', up, 'update');
+      // alvos de manutenção/generalização treinados hoje: baixa na agenda
+      if (!falta) for (const o of pk.objetivos) for (const a of alvosDeHoje(o, pk.agenda)) {
+        if (['MANUTENCAO', 'GENERALIZACAO'].includes(a.fase) && pk.tentativas.some(t => t.alvo_id === a.id)) {
+          const g = pk.agenda.filter(x => x.alvo_id === a.id && !x.data_realizada).sort((x, y) => x.data_programada.localeCompare(y.data_programada))[0];
+          if (g && g.id) await gravar('manutencao_agenda', { id: g.id, data_realizada: hoje() }, 'update');
+        }
+      }
+      fecharModal(); toast(r.pendente ? 'Sessão guardada; sincroniza quando a internet voltar.' : 'Sessão finalizada.');
+      ir('#/paciente/' + ses.paciente_id + '/sub-' + (pk.especialidade_id || ''));
+    };
+  };
+  desenhar();
+};
+function rotGrau(g) { return { MAIS_INTRUSIVA: 'ajuda total', PARCIAL_INTRUSIVA: 'ajuda parcial', MENOS_INTRUSIVA: 'ajuda leve', INDEPENDENTE: 'independente', ERRO: 'erro', OMISSAO: 'omissão' }[g] || ''; }
 
 // ----------------------------------------------------------------- catálogo (consulta)
 rotas.catalogo = async (app) => {
