@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.2.0',
+  versao: '0.2.1',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -403,6 +403,7 @@ function contadorSub(subpastas, eid) {
   const n = (subpastas.find(s => s.especialidade_id === eid)?.objetivo || []).filter(o => o.ativo && o.fase !== 'ADQUIRIDO').length;
   return n ? ` <span class="tag b" style="padding:1px 7px">${n}</span>` : '';
 }
+const FASE_CURTA = { LINHA_BASE: 'LB', INTERVENCAO: 'INT', MANUTENCAO: 'MAN', GENERALIZACAO: 'GEN', ADQUIRIDO: 'ADQ' };
 const FASES = { LINHA_BASE: ['Linha de base', 'i'], INTERVENCAO: ['Intervenção', 'b'], MANUTENCAO: ['Manutenção', 'w'], GENERALIZACAO: ['Generalização', 'w'], ADQUIRIDO: ['Adquirido', ''] };
 function cardObjetivo(o) {
   const alvos = (o.alvo || []).filter(a => a.ativo).sort((a, b) => a.ordem - b.ordem);
@@ -611,7 +612,7 @@ rotas.sessao = async (app, id) => {
             return `<button class="tent ${cls}${on}" data-alvo="${a.id}" data-n="${n}" ${podeEditar ? '' : 'disabled'} title="tentativa ${n}">${t ? esc(t.sigla_ajuda) : n}</button>`;
           }).join('');
           const seletor = aberto && aberto.alvoId === a.id ? `<div class="niveis">${o.niveis.map(nv => `<button class="nv ${nv.grau === 'INDEPENDENTE' ? 'ind' : nv.grau === 'ERRO' ? 'err' : ''}" data-sigla="${esc(nv.sigla)}" data-grau="${nv.grau}" data-alvo="${a.id}" data-n="${aberto.numero}">${esc(nv.sigla)}<small>${rotGrau(nv.grau)}</small></button>`).join('')}<button class="nv limpar" data-alvo="${a.id}" data-n="${aberto.numero}" data-limpar>apagar</button></div>` : '';
-          return `<div class="alvo-linha"><div class="alvo-nome"><span class="tag ${FASES[a.fase][1]}" style="padding:1px 7px">${FASES[a.fase][0].slice(0, 5)}</span> ${esc(a.nome)}${pA !== null ? ` <span class="muted">· ${pA}%</span>` : ''}</div><div class="tents">${cels}</div>${seletor}</div>`;
+          return `<div class="alvo-linha"><div class="alvo-nome"><span class="tag ${FASES[a.fase][1]}" style="padding:1px 7px">${FASE_CURTA[a.fase] || ''}</span> ${esc(a.nome)}${pA !== null ? ` <span class="muted">· ${pA}%</span>` : ''}</div><div class="tents">${cels}</div>${seletor}</div>`;
         }).join('')}
         <details style="margin-top:6px;font-size:12.5px"><summary>Procedimento</summary>${[['Sd', o.instrucao_sd], ['Ensino', o.procedimento_ensino], ['Dica', o.passo_dica], ['Correção', o.procedimento_correcao], ['Critério', o.criterio_aprendizado], ['Materiais', o.materiais]].filter(x => x[1]).map(x => `<div class="campo"><b>${x[0]}</b>${esc(x[1])}</div>`).join('') || '<span class="muted">—</span>'}</details>
       </div>`;
