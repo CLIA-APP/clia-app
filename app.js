@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.4.0',
+  versao: '0.4.1',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -406,6 +406,7 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
   app.querySelectorAll('[data-ver-av]').forEach(b => b.onclick = () => ir('#/avaliacao/' + b.dataset.verAv));
   const na = $('#novaav', app); if (na) na.onclick = () => novaAvaliacao(p);
   app.querySelectorAll('[data-fase-menu]').forEach(b => b.onclick = () => menuFase(b.dataset.faseMenu));
+  app.querySelectorAll('[data-prox]').forEach(b => b.onclick = () => verProximos(b.dataset.prox, b.dataset.nome, p.id));
 };
 function contadorSub(subpastas, eid) {
   const n = (subpastas.find(s => s.especialidade_id === eid)?.objetivo || []).filter(o => o.ativo && o.fase !== 'ADQUIRIDO').length;
@@ -422,7 +423,7 @@ function cardObjetivo(o) {
   const ultima = hist[0];
   return `<div class="obj"><div class="cab"><div><h5>${esc(o.nome)}</h5>
       <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap"><span class="tag ${FASES[o.fase][1]}">${FASES[o.fase][0]}</span>${tipo ? `<span class="tag">${esc(tipo.chave)}</span>` : ''}<span class="tag">${o.alvos_por_sessao} alvo(s)/sessão · ${o.tentativas_alvo} tent.</span></div></div>
-      ${possoConfigurar() ? `<button class="btn ghost sm" data-fase-menu="${o.id}">Mudar fase</button>` : ''}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${o.fase === 'ADQUIRIDO' && possoConfigurar() ? `<button class="btn sm" data-prox="${o.id}" data-nome="${esc(o.nome)}">Próximos objetivos</button>` : ''}${possoConfigurar() ? `<button class="btn ghost sm" data-fase-menu="${o.id}">Mudar fase</button>` : ''}</div></div>
     ${alvos.length ? `<div class="alvos">${alvos.map(a => `<span class="tag ${FASES[a.fase][1]}" title="${FASES[a.fase][0]}${a.fase === 'MANUTENCAO' ? proxManut(a) : ''}">${esc(a.nome)}${a.fase === 'MANUTENCAO' ? proxManut(a) : ''}</span>`).join('')}</div>` : ''}
     ${ultima ? `<div class="evol ${ultima.resultado === 'REGREDIU' ? 'ruim' : ''}"><b>${fmtData(ultima.calculado_em.slice(0, 10))} · ${esc(ultima.alvo)}</b> ${esc(ultima.motivo)}</div>` : ''}
     <details><summary>Ver procedimento${hist.length ? ' e histórico' : ''}</summary>${campo('Objetivo', o.objetivo)}${campo('Instrução (Sd)', o.instrucao_sd)}${campo('Procedimento de ensino', o.procedimento_ensino)}${campo('Passo da dica', o.passo_dica)}${campo('Correção', o.procedimento_correcao)}${campo('Critério', o.criterio_aprendizado)}${campo('Materiais', o.materiais)}
@@ -699,9 +700,14 @@ rotas.sessao = async (app, id) => {
       // o motor de fases rodou no servidor ao finalizar: mostra o que decidiu
       const { data: dec } = await sb.from('alvo_evolucao').select('resultado,fase_anterior,fase_nova,motivo,alvo(nome)').eq('sessao_id', id).order('calculado_em');
       if (!dec || !dec.length) { toast('Sessão finalizada. Nenhuma mudança de fase.'); return voltar(); }
+      // objetivos que ficaram inteiros adquiridos: dá para já pegar os próximos
+      const { data: prontos } = await sb.from('objetivo').select('id,nome').eq('fase', 'ADQUIRIDO')
+        .in('id', [...new Set(pk.objetivos.map(o => o.id))]);
       modal(`<h3>Sessão finalizada — ${dec.length} decisão(ões) do critério</h3>
         ${dec.map(e => `<div class="evol ${e.resultado === 'REGREDIU' ? 'ruim' : ''}" style="margin-bottom:6px"><b>${esc(e.alvo?.nome || '')} · ${FASES[e.fase_anterior]?.[0] || e.fase_anterior} → ${FASES[e.fase_nova]?.[0] || e.fase_nova}</b> ${esc(e.motivo)}</div>`).join('')}
+        ${(prontos || []).length ? `<p class="muted" style="font-size:12.5px;margin:10px 0 6px">Objetivo concluído — quer ver o que vem depois?</p>${prontos.map(o => `<button class="btn ghost block" data-prox2="${o.id}" data-nome="${esc(o.nome)}" style="margin-bottom:6px;text-align:left">Próximos de "${esc(o.nome)}"</button>`).join('')}` : ''}
         <div class="acoes"><button class="btn" id="okdec">Entendi</button></div>`);
+      document.querySelectorAll('[data-prox2]').forEach(b => b.onclick = () => { fecharModal(); verProximos(b.dataset.prox2, b.dataset.nome, ses.paciente_id); });
       $('#okdec').onclick = () => { fecharModal(); voltar(); };
     };
   };
@@ -832,6 +838,34 @@ rotas.avaliacao = async (app, id) => {
   };
   desenhar();
 };
+
+// quando um objetivo é concluído: o que treinar em seguida
+async function verProximos(objetivoId, nomeObjetivo, pacienteId) {
+  modal('<h3>Próximos objetivos</h3><div class="spinner"></div>');
+  const { data, error } = await sb.rpc('sugerir_proximos', { p_objetivo: objetivoId });
+  if (error) { fecharModal(); return toast(error.message, 6000); }
+  const props = data || [];
+  const escolhidos = new Set(props.filter(p => p.origem === 'ITEM').map(p => p.programa_id));
+  const desenhar = () => {
+    const box = $('#modal .box');
+    box.innerHTML = `<h3>Próximos objetivos</h3>
+      <p class="muted" style="margin:0 0 10px;font-size:13px">Depois de "${esc(nomeObjetivo)}". ${props.length ? 'Os que vêm do item seguinte do protocolo já vêm marcados; os "por área" são parecidos, confira antes.' : ''}</p>
+      ${props.length ? `<div class="lista" style="max-height:48vh;overflow:auto">${props.map(p => `<div class="it prop ${escolhidos.has(p.programa_id) ? 'on' : ''}" data-pg="${p.programa_id}" style="cursor:pointer">
+        <div><b>${escolhidos.has(p.programa_id) ? '☑' : '☐'} ${esc(p.programa_nome)}</b>
+        <small>${p.origem === 'ITEM' ? 'próximo item do protocolo' : 'por área (confira)'}${p.especialidade ? ' · ' + esc(p.especialidade) : ''}${p.item_texto ? ' · ' + esc(p.item_texto.slice(0, 80)) : ''}</small></div></div>`).join('')}</div>`
+        : '<p class="muted">Não achei um próximo passo automático para este objetivo. Use "+ Objetivo do catálogo" na subpasta.</p>'}
+      <div class="acoes"><button type="button" class="btn ghost" data-fechar>Fechar</button>${props.length ? `<button class="btn" id="addprox">Adicionar ${escolhidos.size}</button>` : ''}</div>`;
+    box.querySelectorAll('.prop').forEach(b => b.onclick = () => { const k = b.dataset.pg; escolhidos.has(k) ? escolhidos.delete(k) : escolhidos.add(k); desenhar(); });
+    const ba = $('#addprox'); if (ba) ba.onclick = async () => {
+      if (!escolhidos.size) return toast('Marque pelo menos um.');
+      const { data: n, error: e2 } = await sb.rpc('criar_objetivos_das_propostas',
+        { p_paciente: pacienteId, p_avaliacao: null, p_programas: [...escolhidos] });
+      if (e2) return toast(e2.message, 6000);
+      fecharModal(); toast(`${n} objetivo(s) adicionado(s).`); render();
+    };
+  };
+  desenhar();
+}
 
 // % de uma resposta (espelha resposta_pct do banco: normaliza a escala e inverte se o item for invertido)
 function pctResposta(r, it, pont) {
