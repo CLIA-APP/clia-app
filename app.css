@@ -108,3 +108,8 @@
 .nota.on{background:var(--brand);border-color:var(--brand);color:#fff}
 .nota.limpar{font-weight:500;color:var(--ink3)}
 .it.prop.on{border-color:var(--brand);background:var(--brand-2)}
+/* evolução */
+.graf{width:100%;height:auto;max-height:200px;display:block;margin:6px 0}
+.legenda{display:flex;flex-wrap:wrap;gap:10px;font-size:11.5px;color:var(--ink2)}
+.legenda span{display:flex;align-items:center;gap:4px}
+.legenda i{width:10px;height:3px;border-radius:2px;display:inline-block}
