@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.1.0',
+  versao: '0.1.1',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -25,6 +25,27 @@ const idade = (nasc) => {
   if (h.getDate() < n.getDate()) m--;
   return `${Math.floor(m / 12)}a ${m % 12}m`;
 };
+// campo de data em três partes (dia / mês / ano) — muito mais rápido que o calendário do navegador
+const MESES = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+function campoData(nome, valor) {
+  const [a, m, d] = (valor || '').split('-').map(Number);
+  const op = (n, sel, txt) => `<option value="${n}" ${n === sel ? 'selected' : ''}>${txt}</option>`;
+  return `<div class="data3" data-nome="${nome}">
+    <select data-p="d" aria-label="dia"><option value="">dia</option>${Array.from({length:31},(_,i)=>op(i+1,d,i+1)).join('')}</select>
+    <select data-p="m" aria-label="mês"><option value="">mês</option>${MESES.map((n,i)=>op(i+1,m,n)).join('')}</select>
+    <input data-p="a" type="number" inputmode="numeric" placeholder="ano" min="1900" max="2100" value="${a || ''}" aria-label="ano">
+  </div>`;
+}
+// lê os campos data3 de um form e devolve {nome: 'AAAA-MM-DD' | null}
+function lerDatas(form) {
+  const r = {};
+  form.querySelectorAll('.data3').forEach(el => {
+    const d = el.querySelector('[data-p=d]').value, m = el.querySelector('[data-p=m]').value, a = el.querySelector('[data-p=a]').value;
+    r[el.dataset.nome] = (d && m && a) ? `${a}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}` : null;
+  });
+  return r;
+}
+
 function toast(msg, ms = 2600) {
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
   clearTimeout(toast._t); toast._t = setTimeout(() => t.hidden = true, ms);
@@ -259,7 +280,7 @@ function formPaciente(p = null) {
     <form class="form" id="fp">
       <div><label>Nome completo</label><input name="nome" required value="${esc(p?.nome)}"></div>
       <div class="row">
-        <div><label>Data de nascimento</label><input name="data_nascimento" type="date" value="${p?.data_nascimento || ''}"></div>
+        <div><label>Data de nascimento</label>${campoData('data_nascimento', p?.data_nascimento)}</div>
         <div><label>Unidade</label><select name="unidade_id" required>${unidades.map(u => `<option value="${u.id}" ${p?.unidade_id === u.id ? 'selected' : ''}>${esc(u.nome)}</option>`).join('')}</select></div>
       </div>
       <div class="row">
@@ -270,7 +291,7 @@ function formPaciente(p = null) {
         <div><label>Convênio</label><input name="convenio" value="${esc(p?.convenio)}"></div>
         <div><label>Nº carteirinha</label><input name="identificador_convenio" value="${esc(p?.identificador_convenio)}"></div>
       </div>
-      <div><label>Data de entrada</label><input name="data_entrada" type="date" value="${p?.data_entrada || hoje()}"></div>
+      <div><label>Data de entrada</label>${campoData('data_entrada', p?.data_entrada || hoje())}</div>
       <div><label>Observações</label><textarea name="observacoes">${esc(p?.observacoes)}</textarea></div>
       <div class="acoes"><button type="button" class="btn ghost" data-fechar>Cancelar</button><button class="btn" type="submit">Salvar</button></div>
     </form>`);
@@ -278,6 +299,8 @@ function formPaciente(p = null) {
     ev.preventDefault();
     const f = Object.fromEntries(new FormData(ev.target));
     for (const k in f) if (f[k] === '') f[k] = null;
+    Object.assign(f, lerDatas(ev.target));
+    if (!f.data_nascimento) return toast('Preencha dia, mês e ano de nascimento.');
     const reg = { id: p?.id || uuid(), ...f, ativo: true };
     const r = await gravar('paciente', reg);
     if (!r.ok) return toast('Não foi possível salvar: ' + r.erro, 5000);
@@ -345,7 +368,9 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
   $('.main', app).innerHTML = `
     <div class="phead"><div><p style="margin:0"><button class="link" onclick="location.hash='#/pacientes'">← Pacientes</button></p><h1>${esc(p.nome)}</h1>
       <p>${idade(p.data_nascimento)} · ${esc(unid?.nome || '')}${p.hipotese ? ' · ' + esc(p.hipotese) : ''}</p></div></div>
-    <div class="tabs">${abas.map(([k, t]) => `<button class="${aba === k ? 'on' : ''}" onclick="location.hash='#/paciente/${id}/${k}'">${esc(t)}${k.startsWith('sub-') ? contadorSub(subpastas, k.slice(4)) : ''}</button>`).join('')}</div>
+    <div class="tabs">${abas.filter(([k]) => !k.startsWith('sub-')).map(([k, t]) => `<button class="${aba === k ? 'on' : ''}" onclick="location.hash='#/paciente/${id}/${k}'">${esc(t)}</button>`).join('')}
+      <span class="tabs-rot">Subpastas:</span></div>
+    <div class="chips">${abas.filter(([k]) => k.startsWith('sub-')).map(([k, t]) => `<button class="${aba === k ? 'on' : ''}" onclick="location.hash='#/paciente/${id}/${k}'">${esc(t)}${contadorSub(subpastas, k.slice(4))}</button>`).join('')}</div>
     ${corpo}`;
 
   const ed = $('#editar', app); if (ed) ed.onclick = () => formPaciente(p);
@@ -416,21 +441,31 @@ async function formEquipe(p) {
 // ----------------------------------------------------------------- catálogo -> objetivo
 async function escolherPrograma(p, eid, subpastas) {
   const e = estado.especialidades.find(x => x.id === eid);
+  const { data: areas } = await sb.from('area_geral').select('codigo,nome').order('ordem');
   modal(`<h3>Objetivo do catálogo — ${esc(e.nome)}</h3>
-    <div class="busca"><input id="qb" placeholder="Buscar programa pelo nome…" autocomplete="off"><label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="todas"> todas as especialidades</label></div>
-    <div class="cat" id="cat"><p class="muted">Digite para buscar.</p></div>
+    <div class="busca" style="flex-wrap:wrap">
+      <select id="area"><option value="">Todas as áreas</option>${(areas || []).map(a => `<option value="${a.codigo}">${esc(a.nome)}</option>`).join('')}</select>
+      <input id="qb" placeholder="Filtrar pelo nome (opcional)…" autocomplete="off">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap"><input type="checkbox" id="todas"> todas as especialidades</label>
+    </div>
+    <div class="cat" id="cat"><div class="spinner"></div></div>
+    <p class="muted" id="catinfo" style="font-size:12px;margin:6px 0 0"></p>
     <div class="acoes"><button type="button" class="btn ghost" data-fechar>Fechar</button></div>`);
   let t;
   const buscar = async () => {
-    const q = $('#qb').value.trim(); if (q.length < 2) return;
-    let c = sb.from('programa_completo').select('id,nome,especialidade_nome,tipo_registro_id,area_nome,item_texto').eq('ativo', true).ilike('nome', `%${q}%`).order('nome').limit(40);
+    const q = $('#qb').value.trim(), area = $('#area').value, LIM = 150;
+    let c = sb.from('programa_completo').select('id,nome,especialidade_nome,area_nome,item_texto').eq('ativo', true).order('nome').limit(LIM);
     if (!$('#todas').checked) c = c.eq('especialidade_id', eid);
+    if (area) c = c.eq('area_codigo', area);
+    if (q) c = c.ilike('nome', `%${q}%`);
     const { data } = await c;
     $('#cat').innerHTML = (data || []).map(pr => `<button data-id="${pr.id}">${esc(pr.nome)}<small>${esc(pr.especialidade_nome || '')}${pr.area_nome ? ' · ' + esc(pr.area_nome) : ''}${pr.item_texto ? ' · avaliação: ' + esc(pr.item_texto.slice(0, 60)) : ''}</small></button>`).join('') || '<p class="muted">Nada encontrado.</p>';
+    $('#catinfo').textContent = (data || []).length >= LIM ? `Mostrando os primeiros ${LIM} — escolha uma área ou digite parte do nome para afinar.` : `${(data || []).length} programa(s).`;
     $('#cat').querySelectorAll('button').forEach(b => b.onclick = () => confirmarObjetivo(p, eid, subpastas, b.dataset.id));
   };
   $('#qb').oninput = () => { clearTimeout(t); t = setTimeout(buscar, 250); };
-  $('#todas').onchange = buscar;
+  $('#area').onchange = buscar; $('#todas').onchange = buscar;
+  buscar();
 }
 async function confirmarObjetivo(p, eid, subpastas, programaId) {
   const [{ data: pr }, { data: alvos }, { data: niveis }] = await Promise.all([
