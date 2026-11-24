@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.5.0',
+  versao: '0.5.1',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -193,14 +193,22 @@ async function render() {
   (rotas[rota] || rotas.pacientes)(app, ...args);
 }
 
+// bloco da marca: usa logo.png quando existir; senão, o nome escrito
+function marca(compacto) {
+  return `<div class="brand sem-logo">
+    <img class="logo" src="logo.png" alt="CLIA Núcleo Comportamental" onload="this.closest('.brand').classList.remove('sem-logo')">
+    <span class="nome"><span class="mark">C</span><span><b>CLIA</b>${compacto ? '' : '<small>Núcleo Comportamental</small>'}</span></span>
+  </div>`;
+}
+
 function shell(conteudo, ativo) {
   const eu = estado.eu;
   const item = (h, txt, on) => `<button class="${on ? 'on' : ''}" onclick="location.hash='#/${h}'">${txt}</button>`;
   return `
-  <div class="topbar"><div class="brand"><div class="mark">C</div><b>CLIA</b></div><button class="btn ghost sm" onclick="document.querySelector('.side').classList.toggle('aberto')">Menu</button></div>
+  <div class="topbar">${marca(true)}<button class="btn ghost sm" onclick="document.querySelector('.side').classList.toggle('aberto')">Menu</button></div>
   <div class="shell">
     <aside class="side">
-      <div class="brand"><div class="mark">C</div><div><b>CLIA</b><small>prontuário comportamental</small></div></div>
+      ${marca(false)}
       <nav class="nav">
         ${item('pacientes', 'Pacientes', ativo === 'pacientes')}
         ${item('catalogo', 'Catálogo de programas', ativo === 'catalogo')}
@@ -217,7 +225,7 @@ function shell(conteudo, ativo) {
 // ----------------------------------------------------------------- login
 function telaLogin(app, modo = 'entrar', msg = '') {
   app.innerHTML = `<div class="centro"><div class="login">
-    <div class="brand"><div class="mark">C</div><div><b>CLIA</b><small>prontuário comportamental</small></div></div>
+    ${marca(false)}
     <h1>${modo === 'entrar' ? 'Entrar' : modo === 'criar' ? 'Criar conta' : 'Recuperar senha'}</h1>
     <p class="sub">${modo === 'criar' ? 'Use o e-mail cadastrado pela direção.' : 'Use seu e-mail da CLIA.'}</p>
     ${msg ? `<div class="${msg.startsWith('!') ? 'erro' : 'ok'}" style="margin-bottom:12px">${esc(msg.replace(/^!/, ''))}</div>` : ''}
@@ -256,7 +264,7 @@ function traduzirErro(m) {
   return m;
 }
 function telaPendente(app, email, texto) {
-  app.innerHTML = `<div class="centro"><div class="login"><div class="brand"><div class="mark">C</div><b>CLIA</b></div>
+  app.innerHTML = `<div class="centro"><div class="login">${marca(true)}
     <h1>Quase lá</h1><p class="sub">${esc(email)}</p><div class="ok">${esc(texto)}</div>
     <p style="margin-top:16px"><button class="btn ghost block" id="sair">Sair</button></p></div></div>`;
   $('#sair', app).onclick = async () => { await sb.auth.signOut(); estado.eu = null; render(); };
