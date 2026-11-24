@@ -95,3 +95,16 @@
 .evol{background:var(--brand-2);color:var(--brand-3);border-radius:8px;padding:7px 10px;font-size:12.5px;margin-top:8px}
 .evol.ruim{background:var(--warn-2);color:var(--warn)}
 .evol b{display:block;font-size:11.5px;margin-bottom:2px}
+/* avaliação */
+.grupo-av{border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:#fff;overflow:hidden}
+.cab-grupo{width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 13px;background:#fff;text-align:left;font-size:13.5px}
+.cab-grupo:hover{background:var(--line2)}
+.item-av{border-top:1px solid var(--line2);padding:10px 13px}
+.item-av.baixo{background:var(--warn-2)}
+.item-av.ok{background:var(--brand-2)}
+.item-txt{font-size:13px;margin-bottom:7px}
+.escala{display:flex;flex-wrap:wrap;gap:5px}
+.nota{min-width:38px;padding:6px 9px;border:1.5px solid var(--line);border-radius:8px;background:#fff;font-weight:600;font-size:12.5px}
+.nota.on{background:var(--brand);border-color:var(--brand);color:#fff}
+.nota.limpar{font-weight:500;color:var(--ink3)}
+.it.prop.on{border-color:var(--brand);background:var(--brand-2)}
