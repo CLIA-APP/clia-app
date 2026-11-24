@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.4.1',
+  versao: '0.5.0',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -341,7 +341,7 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
   if (!pasta?.paciente) { $('.main', app).innerHTML = '<p class="erro">Paciente não encontrado ou sem permissão.</p>'; return; }
   const { paciente: p, equipe, subpastas, responsaveis } = pasta;
   const esp = (eid) => estado.especialidades.find(e => e.id === eid);
-  const abas = [['ficha', 'Ficha'], ['equipe', 'Equipe'], ['avaliacoes', 'Avaliações'], ...estado.especialidades.filter(e => e.subpasta).map(e => ['sub-' + e.id, e.nome])];
+  const abas = [['ficha', 'Ficha'], ['equipe', 'Equipe'], ['avaliacoes', 'Avaliações'], ['evolucao', 'Evolução'], ...estado.especialidades.filter(e => e.subpasta).map(e => ['sub-' + e.id, e.nome])];
   const unid = estado.unidades.find(u => u.id === p.unidade_id);
 
   let corpo = '';
@@ -362,6 +362,8 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
     corpo = `<div class="card"><div class="phead" style="margin-bottom:12px"><h3>Equipe do paciente</h3>${['direcao','supervisor'].includes(estado.eu.perfil) ? '<button class="btn ghost sm" id="addeq">+ Profissional</button>' : ''}</div>
       ${equipe.length ? '<div class="lista">' + equipe.map(e => `<div class="it"><div><b>${esc(e.profissional?.nome || e.profissional_id)}</b><small>${esc(esp(e.especialidade_id || e.profissional?.especialidade_id)?.nome || '')}</small></div>
         ${['direcao','supervisor'].includes(estado.eu.perfil) ? `<button class="btn ghost sm" data-rm="${e.profissional_id}">remover</button>` : ''}</div>`).join('') + '</div>' : '<p class="muted">Ninguém na equipe ainda. Só quem está na equipe (ou a direção/supervisão) vê esta pasta.</p>'}</div>`;
+  } else if (aba === 'evolucao') {
+    corpo = '<div class="spinner"></div>';
   } else if (aba === 'avaliacoes') {
     const avs = pasta.avaliacoes || [];
     corpo = `<div class="phead" style="margin-bottom:10px"><div><h3>Avaliações</h3><p class="muted">Preencha o protocolo aqui e o app monta a lista de objetivos sugeridos.</p></div>
@@ -392,6 +394,17 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
     <div class="chips">${abas.filter(([k]) => k.startsWith('sub-')).map(([k, t]) => `<button class="${aba === k ? 'on' : ''}" onclick="location.hash='#/paciente/${id}/${k}'">${esc(t)}${contadorSub(subpastas, k.slice(4))}</button>`).join('')}</div>
     ${corpo}`;
 
+  if (aba === 'evolucao') {
+    const periodoAtual = () => sessionStorage.getItem('clia.periodo') || '90';
+    const pintar = async (dias) => {
+      sessionStorage.setItem('clia.periodo', dias);
+      $('.main', app).innerHTML = await corpoEvolucao(p, dias);
+      $('#perpac', app).onchange = (e) => pintar(e.target.value);
+      const bc = $('#copiarevo', app);
+      if (bc) bc.onclick = () => { const t = $('.card p', app).textContent; navigator.clipboard?.writeText(t).then(() => toast('Texto copiado.'), () => toast('Não consegui copiar; selecione o texto.')); };
+    };
+    pintar(periodoAtual());
+  }
   const ed = $('#editar', app); if (ed) ed.onclick = () => formPaciente(p);
   const nr = $('#novoresp', app); if (nr) nr.onclick = () => formResponsavel(p.id);
   const ae = $('#addeq', app); if (ae) ae.onclick = () => formEquipe(p);
@@ -407,6 +420,7 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
   const na = $('#novaav', app); if (na) na.onclick = () => novaAvaliacao(p);
   app.querySelectorAll('[data-fase-menu]').forEach(b => b.onclick = () => menuFase(b.dataset.faseMenu));
   app.querySelectorAll('[data-prox]').forEach(b => b.onclick = () => verProximos(b.dataset.prox, b.dataset.nome, p.id));
+  app.querySelectorAll('[data-evo]').forEach(b => b.onclick = () => evolucaoObjetivo(b.dataset.evo, b.dataset.nome, '90'));
 };
 function contadorSub(subpastas, eid) {
   const n = (subpastas.find(s => s.especialidade_id === eid)?.objetivo || []).filter(o => o.ativo && o.fase !== 'ADQUIRIDO').length;
@@ -423,7 +437,7 @@ function cardObjetivo(o) {
   const ultima = hist[0];
   return `<div class="obj"><div class="cab"><div><h5>${esc(o.nome)}</h5>
       <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap"><span class="tag ${FASES[o.fase][1]}">${FASES[o.fase][0]}</span>${tipo ? `<span class="tag">${esc(tipo.chave)}</span>` : ''}<span class="tag">${o.alvos_por_sessao} alvo(s)/sessão · ${o.tentativas_alvo} tent.</span></div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">${o.fase === 'ADQUIRIDO' && possoConfigurar() ? `<button class="btn sm" data-prox="${o.id}" data-nome="${esc(o.nome)}">Próximos objetivos</button>` : ''}${possoConfigurar() ? `<button class="btn ghost sm" data-fase-menu="${o.id}">Mudar fase</button>` : ''}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn ghost sm" data-evo="${o.id}" data-nome="${esc(o.nome)}">Evolução</button>${o.fase === 'ADQUIRIDO' && possoConfigurar() ? `<button class="btn sm" data-prox="${o.id}" data-nome="${esc(o.nome)}">Próximos objetivos</button>` : ''}${possoConfigurar() ? `<button class="btn ghost sm" data-fase-menu="${o.id}">Mudar fase</button>` : ''}</div></div>
     ${alvos.length ? `<div class="alvos">${alvos.map(a => `<span class="tag ${FASES[a.fase][1]}" title="${FASES[a.fase][0]}${a.fase === 'MANUTENCAO' ? proxManut(a) : ''}">${esc(a.nome)}${a.fase === 'MANUTENCAO' ? proxManut(a) : ''}</span>`).join('')}</div>` : ''}
     ${ultima ? `<div class="evol ${ultima.resultado === 'REGREDIU' ? 'ruim' : ''}"><b>${fmtData(ultima.calculado_em.slice(0, 10))} · ${esc(ultima.alvo)}</b> ${esc(ultima.motivo)}</div>` : ''}
     <details><summary>Ver procedimento${hist.length ? ' e histórico' : ''}</summary>${campo('Objetivo', o.objetivo)}${campo('Instrução (Sd)', o.instrucao_sd)}${campo('Procedimento de ensino', o.procedimento_ensino)}${campo('Passo da dica', o.passo_dica)}${campo('Correção', o.procedimento_correcao)}${campo('Critério', o.criterio_aprendizado)}${campo('Materiais', o.materiais)}
@@ -913,6 +927,95 @@ async function verPropostas(av, avaliacaoId) {
     };
   };
   desenhar();
+}
+
+// ----------------------------------------------------------------- evolução
+const PERIODOS = [['30', 'últimos 30 dias'], ['90', 'últimos 3 meses'], ['180', 'últimos 6 meses'], ['', 'tudo']];
+function desde(dias) { if (!dias) return null; const d = new Date(); d.setDate(d.getDate() - (+dias)); return d.toISOString().slice(0, 10); }
+
+// gráfico de linha simples em SVG: pontos {d: 'AAAA-MM-DD', v: 0..100}
+function grafico(series, corte) {
+  const todos = series.flatMap(s => s.pontos);
+  if (todos.length < 1) return '<p class="muted" style="font-size:12.5px">Sem sessões registradas no período.</p>';
+  const datas = [...new Set(todos.map(p => p.d))].sort();
+  const L = 34, R = 10, T = 10, B = 26, W = 560, H = 170;
+  const px = (d) => datas.length < 2 ? L + (W - L - R) / 2 : L + (W - L - R) * datas.indexOf(d) / (datas.length - 1);
+  const py = (v) => T + (H - T - B) * (1 - v / 100);
+  const cores = ['var(--brand)', '#b45309', '#1d4ed8', '#9333ea', '#be123c', '#0f766e'];
+  const linhas = series.map((s, i) => {
+    const ps = s.pontos.slice().sort((a, b) => a.d.localeCompare(b.d));
+    if (!ps.length) return '';
+    const dd = ps.map(p => `${px(p.d)},${py(p.v)}`).join(' ');
+    return `<polyline points="${dd}" fill="none" stroke="${cores[i % cores.length]}" stroke-width="2" stroke-linejoin="round"/>
+      ${ps.map(p => `<circle cx="${px(p.d)}" cy="${py(p.v)}" r="3" fill="${cores[i % cores.length]}"><title>${esc(s.nome)} · ${fmtData(p.d)} · ${p.v}%</title></circle>`).join('')}`;
+  }).join('');
+  const marcasY = [0, 50, 100].map(v => `<line x1="${L}" y1="${py(v)}" x2="${W - R}" y2="${py(v)}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="4" y="${py(v) + 4}" font-size="10" fill="var(--ink3)">${v}%</text>`).join('');
+  const mostra = datas.length <= 6 ? datas : [datas[0], datas[Math.floor(datas.length / 2)], datas[datas.length - 1]];
+  const marcasX = mostra.map(d => `<text x="${px(d)}" y="${H - 8}" font-size="10" fill="var(--ink3)" text-anchor="middle">${fmtData(d).slice(0, 5)}</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" class="graf" role="img">${marcasY}
+    <line x1="${L}" y1="${py(corte)}" x2="${W - R}" y2="${py(corte)}" stroke="var(--brand)" stroke-width="1.5" stroke-dasharray="5 3" opacity=".6"/>
+    <text x="${W - R}" y="${py(corte) - 4}" font-size="10" fill="var(--brand-3)" text-anchor="end">critério ${corte}%</text>
+    ${marcasX}${linhas}</svg>
+    ${series.length > 1 ? `<div class="legenda">${series.map((s, i) => `<span><i style="background:${cores[i % cores.length]}"></i>${esc(s.nome)}</span>`).join('')}</div>` : ''}`;
+}
+
+async function evolucaoObjetivo(objetivoId, nomeObjetivo, dias) {
+  modal('<h3>Evolução</h3><div class="spinner"></div>');
+  const d = desde(dias);
+  const [{ data: porAlvo }, { data: porObj }] = await Promise.all([
+    sb.rpc('evolucao_alvo', { p_objetivo: objetivoId, p_desde: d }),
+    sb.rpc('evolucao_objetivo', { p_objetivo: objetivoId, p_desde: d }),
+  ]);
+  const corte = +estado.regras.CRIT_PCT || 80;
+  const alvos = [];
+  for (const r of porAlvo || []) {
+    let g = alvos.find(x => x.id === r.alvo_id);
+    if (!g) { g = { id: r.alvo_id, nome: r.alvo, fase: r.fase, pontos: [] }; alvos.push(g); }
+    if (r.pct !== null) g.pontos.push({ d: r.data_sessao, v: +r.pct });
+  }
+  const serieObj = [{ nome: 'objetivo', pontos: (porObj || []).filter(r => r.pct !== null).map(r => ({ d: r.data_sessao, v: +r.pct })) }];
+  const box = $('#modal .box');
+  box.innerHTML = `<h3>Evolução — ${esc(nomeObjetivo)}</h3>
+    <div class="busca"><select id="perevo">${PERIODOS.map(([v, t]) => `<option value="${v}" ${v === String(dias ?? '') ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+    <b style="font-size:12px;color:var(--ink3)">O OBJETIVO AO LONGO DO TEMPO</b>
+    ${grafico(serieObj, corte)}
+    ${alvos.length > 1 ? `<b style="font-size:12px;color:var(--ink3);display:block;margin-top:14px">ALVO A ALVO</b>${grafico(alvos, corte)}` : ''}
+    <b style="font-size:12px;color:var(--ink3);display:block;margin-top:14px">SESSÕES</b>
+    <div class="lista" style="max-height:30vh;overflow:auto">${(porObj || []).slice().reverse().map(r => `<div class="it" style="cursor:default"><div><b>${fmtData(r.data_sessao)} · ${r.pct}%</b><small>${r.independentes} de ${r.tentativas} independentes${r.profissional ? ' · ' + esc(r.profissional) : ''}${r.fase ? ' · passou para ' + (FASES[r.fase]?.[0] || r.fase) : ''}</small></div></div>`).join('') || '<p class="muted">Sem sessões no período.</p>'}</div>
+    <div class="acoes"><button type="button" class="btn ghost" data-fechar>Fechar</button></div>`;
+  $('#perevo').onchange = (e) => evolucaoObjetivo(objetivoId, nomeObjetivo, e.target.value);
+}
+
+async function corpoEvolucao(p, dias) {
+  const d = desde(dias);
+  const [{ data: resumo }, { data: marcos }] = await Promise.all([
+    sb.rpc('resumo_paciente', { p_paciente: p.id, p_desde: d, p_especialidade: null }),
+    sb.rpc('marcos_paciente', { p_paciente: p.id, p_desde: d }),
+  ]);
+  const rs = resumo || [], ms = marcos || [];
+  const total = rs.reduce((a, r) => a + r.sessoes, 0), faltas = rs.reduce((a, r) => a + r.faltas, 0);
+  const adq = rs.reduce((a, r) => a + r.adquiridos_no_periodo, 0), al = rs.reduce((a, r) => a + r.alertas, 0);
+  const periodo = PERIODOS.find(x => x[0] === String(dias ?? ''))?.[1] || 'o período';
+  const frases = [];
+  frases.push(`Nos ${periodo}, ${esc(p.nome)} teve ${total} sessão(ões) registrada(s)${faltas ? ` e ${faltas} falta(s)` : ''}.`);
+  if (adq) frases.push(`${adq} alvo(s) atingiram o critério e foram marcados como adquiridos.`);
+  if (al) frases.push(`${al} alvo(s) tiveram queda de desempenho e estão sinalizados para revisão do nível de ajuda ou do procedimento.`);
+  const ativas = rs.filter(r => r.sessoes || r.objetivos_ativos);
+  if (ativas.length) frases.push('Por especialidade: ' + ativas.map(r =>
+    `${r.especialidade} — ${r.objetivos_ativos} objetivo(s) ativo(s)` +
+    (r.pct_geral !== null ? `, ${r.pct_geral}% de respostas independentes` : ', sem sessões no período') +
+    ` (${r.em_linha_base} em linha de base, ${r.em_intervencao} em intervenção, ${r.adquiridos} adquirido(s))`).join('; ') + '.');
+  return `<div class="phead" style="margin-bottom:10px"><div><h3>Evolução</h3><p class="muted">Números das sessões registradas no app. A evolução clínica de cada atendimento continua no Métodos.</p></div>
+      <select id="perpac">${PERIODOS.map(([v, t]) => `<option value="${v}" ${v === String(dias ?? '') ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+    <div class="card" style="margin-bottom:12px"><b style="font-size:12px;color:var(--ink3)">RESUMO</b>
+      <p style="margin:6px 0 0;font-size:13.5px;line-height:1.55">${frases.join(' ')}</p>
+      <div class="acoes" style="margin-top:10px"><button class="btn ghost sm" id="copiarevo">Copiar texto</button></div></div>
+    ${rs.filter(r => r.objetivos_ativos).map(r => `<div class="card" style="margin-bottom:10px"><div class="phead" style="margin-bottom:6px"><h3>${esc(r.especialidade)}</h3><span class="tag ${r.pct_geral >= (+estado.regras.CRIT_PCT || 80) ? 'b' : ''}">${r.pct_geral !== null ? r.pct_geral + '% independentes' : 'sem sessões'}</span></div>
+      <dl class="dl"><dt>Sessões</dt><dd>${r.sessoes}${r.faltas ? ` (+${r.faltas} falta(s))` : ''} · ${r.tentativas} tentativa(s)</dd>
+        <dt>Objetivos</dt><dd>${r.em_linha_base} linha de base · ${r.em_intervencao} intervenção · ${r.em_manutencao} manutenção · ${r.adquiridos} adquirido(s)</dd>
+        <dt>No período</dt><dd>${r.adquiridos_no_periodo} alvo(s) adquirido(s)${r.alertas ? ` · ${r.alertas} alerta(s) de queda` : ''}</dd></dl></div>`).join('')}
+    <h3 style="margin:18px 0 8px;font-size:14px">O que mudou</h3>
+    ${ms.length ? `<div class="lista">${ms.slice(0, 40).map(m => `<div class="it" style="cursor:default"><div><b>${fmtData(m.quando)} · ${esc(m.especialidade)} · ${esc(m.alvo)}</b><small>${esc(m.objetivo)} — ${esc(m.motivo)}</small></div><span class="tag ${m.resultado === 'REGREDIU' ? 'w' : 'b'}">${FASES[m.fase_nova]?.[0] || m.fase_nova}</span></div>`).join('')}</div>` : '<p class="muted">Nenhuma mudança de fase no período.</p>'}`;
 }
 
 // ----------------------------------------------------------------- catálogo (consulta)
