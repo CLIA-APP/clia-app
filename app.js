@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.1.1',
+  versao: '0.1.2',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -133,10 +133,15 @@ setInterval(sincronizar, 60_000);
 // leitura com cache: tenta o servidor, guarda; sem rede, devolve o que tem
 async function ler(chave, consulta) {
   if (online()) {
+    let motivo = '';
     try {
       const { data, error } = await consulta();
       if (!error) { await DB.set(chave, data); return data; }
-    } catch (e) { /* cai no cache */ }
+      motivo = error.message;
+    } catch (e) { motivo = e.message; }
+    // tinha internet mas o servidor não respondeu: avisa em vez de mostrar a cópia local em silêncio
+    toast('Não consegui atualizar com o servidor (' + motivo.slice(0, 60) + '). Mostrando o que está salvo neste aparelho.', 6000);
+    console.warn('ler(' + chave + '):', motivo);
   }
   return (await DB.get(chave)) ?? null;
 }
