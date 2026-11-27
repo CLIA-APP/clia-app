@@ -172,3 +172,14 @@
 .mini.iv{background:var(--brand-2);color:var(--brand-3)}
 .mini.mn{background:var(--verde-2);color:var(--verde)}
 .mini.ad{background:var(--verde);color:#fff}
+
+/* ------------------------------- frequência e duração (contador e cronômetro) */
+.alvo-linha.medida{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between}
+.alvo-linha.medida .alvo-nome{flex:1 1 180px}
+.contador{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cnt{width:46px;height:40px;border:1.5px solid var(--line);border-radius:9px;background:var(--card);font-size:20px;font-weight:700;color:var(--brand);line-height:1;cursor:pointer}
+.cnt:hover:not(:disabled){border-color:var(--brand)}
+.cnt:disabled{opacity:.35;cursor:default}
+.cnt.mais{background:var(--brand);border-color:var(--brand);color:#fff}
+.cnt-v{min-width:92px;text-align:center;font-weight:700;font-size:15px;color:var(--ink)}
+.cnt-v.tempo{font-variant-numeric:tabular-nums;font-size:22px;letter-spacing:.02em}
