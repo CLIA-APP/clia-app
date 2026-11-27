@@ -1,3 +1,3 @@
 { "name": "CLIA Núcleo Comportamental — prontuário", "short_name": "CLIA", "start_url": "./", "display": "standalone",
-  "background_color": "#f6f8fa", "theme_color": "#1e4a71", "lang": "pt-BR",
+  "background_color": "#ffffff", "theme_color": "#1e4a71", "lang": "pt-BR",
   "icons": [{ "src": "icone.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }] }
