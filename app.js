@@ -1160,8 +1160,9 @@ async function painelNumeros(alvo, dias, u) {
   const nums = await ler('painel_num_' + dias + '_' + (u || 'all'),
     () => sb.rpc('painel_numeros', { p_dias: +dias, p_unidade: u })) || [];
   const v = (k) => nums.find(n => n.chave === k) || {};
+  const num = (x) => String(x).replace('.', ',');
   const PCT = ['independencia'];
-  const fmt = (n) => n.valor == null ? '—' : (PCT.includes(n.chave) ? n.valor + '%' : n.valor);
+  const fmt = (n) => n.valor == null ? '—' : (PCT.includes(n.chave) ? num(n.valor) + '%' : num(n.valor));
   const cartao = (k) => { const n = v(k); return `<div class="stat"><span class="n">${fmt(n)}</span><span class="r">${esc(n.rotulo || '')}</span>${n.detalhe ? `<span class="d">${esc(n.detalhe)}</span>` : ''}</div>`; };
   const fases = ['linha_base', 'intervencao', 'manutencao', 'adquirido'];
   const tot = fases.reduce((s, k) => s + (+v(k).valor || 0), 0) || 1;
@@ -1185,7 +1186,7 @@ async function painelPacientes(alvo, dias, u) {
       <td><span class="mini lb">${l.linha_base}</span><span class="mini iv">${l.intervencao}</span><span class="mini mn">${l.manutencao}</span><span class="mini ad">${l.adquirido}</span></td>
       <td class="c">${l.sessoes}</td>
       <td class="c ${l.faltas >= 3 ? 'ruim' : ''}">${l.faltas}</td>
-      <td class="c">${l.pct == null ? '—' : l.pct + '%'}</td>
+      <td class="c">${l.pct == null ? '—' : String(l.pct).replace('.', ',') + '%'}</td>
       <td class="c">${l.adquiridos_periodo || '—'}</td>
       <td>${l.ultima_sessao ? fmtData(l.ultima_sessao) + ` <small class="muted">(${l.dias}d)</small>` : '<span class="ruim">nunca</span>'}</td></tr>`).join('')}
     </tbody></table></div>
@@ -1203,7 +1204,7 @@ async function painelEquipe(alvo, dias, u) {
     ${linhas.map(l => `<tr>
       <td><b>${esc(l.profissional)}</b><br><small class="muted">${[l.perfil, l.especialidade, l.unidade].filter(Boolean).map(esc).join(' · ')}</small></td>
       <td class="c">${l.pacientes}</td><td class="c">${l.sessoes}</td><td class="c">${l.faltas}</td>
-      <td class="c">${l.tentativas}</td><td class="c">${l.pct == null ? '—' : l.pct + '%'}</td><td class="c">${l.objetivos}</td>
+      <td class="c">${l.tentativas}</td><td class="c">${l.pct == null ? '—' : String(l.pct).replace('.', ',') + '%'}</td><td class="c">${l.objetivos}</td>
       <td>${l.ultima_sessao ? fmtData(l.ultima_sessao) + ` <small class="muted">(${l.dias}d)</small>` : '<span class="ruim">nunca</span>'}</td></tr>`).join('')}
     </tbody></table></div>
     <p class="muted" style="font-size:12.5px">"Objetivos" conta os objetivos ativos dos pacientes em que a pessoa está na equipe. "Indep." é o % de respostas independentes nas sessões que ela aplicou no período.</p>`;
