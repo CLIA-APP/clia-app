@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.6.0',
+  versao: '0.7.0',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -340,7 +340,7 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
     const [p, eq, sub, resp, ses, av] = await Promise.all([
       sb.from('paciente').select('*').eq('id', id).single(),
       sb.from('equipe_paciente').select('profissional_id,especialidade_id,ativo,profissional(nome,perfil_id,especialidade_id)').eq('paciente_id', id).eq('ativo', true),
-      sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,objetivo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,alvos_por_sessao,tentativas_alvo,ativo,alvo(id,nome,fase,ordem,ativo,data_adquirido,alvo_evolucao(resultado,fase_anterior,fase_nova,motivo,calculado_em),manutencao_agenda(data_programada,data_realizada)),objetivo_nivel_ajuda(ordem,sigla,grau))').eq('paciente_id', id).eq('ativo', true),
+      sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,medida_direcao,medida_meta,medida_unidade,objetivo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,alvos_por_sessao,tentativas_alvo,ativo,alvo(id,nome,fase,ordem,ativo,data_adquirido,alvo_evolucao(resultado,fase_anterior,fase_nova,motivo,calculado_em),manutencao_agenda(data_programada,data_realizada)),objetivo_nivel_ajuda(ordem,sigla,grau))').eq('paciente_id', id).eq('ativo', true),
       sb.from('responsavel').select('*').eq('paciente_id', id),
       sb.from('sessao').select('id,subpasta_id,profissional_id,data_sessao,situacao,falta,observacoes,profissional(nome)').eq('paciente_id', id).order('data_sessao', { ascending: false }).limit(60),
       sb.from('avaliacao').select('id,protocolo_id,data_avaliacao,situacao,observacoes,protocolo(nome),profissional:aplicador_id(nome)').eq('paciente_id', id).order('data_avaliacao', { ascending: false }),
@@ -428,6 +428,7 @@ rotas.paciente = async (app, id, aba = 'ficha') => {
   app.querySelectorAll('[data-ver-av]').forEach(b => b.onclick = () => ir('#/avaliacao/' + b.dataset.verAv));
   const na = $('#novaav', app); if (na) na.onclick = () => novaAvaliacao(p);
   app.querySelectorAll('[data-fase-menu]').forEach(b => b.onclick = () => menuFase(b.dataset.faseMenu));
+  app.querySelectorAll('[data-meta]').forEach(b => b.onclick = () => menuMeta(b.dataset));
   app.querySelectorAll('[data-prox]').forEach(b => b.onclick = () => verProximos(b.dataset.prox, b.dataset.nome, p.id));
   app.querySelectorAll('[data-evo]').forEach(b => b.onclick = () => evolucaoObjetivo(b.dataset.evo, b.dataset.nome, '90'));
 };
@@ -435,23 +436,94 @@ function contadorSub(subpastas, eid) {
   const n = (subpastas.find(s => s.especialidade_id === eid)?.objetivo || []).filter(o => o.ativo && o.fase !== 'ADQUIRIDO').length;
   return n ? ` <span class="tag b" style="padding:1px 7px">${n}</span>` : '';
 }
+// ---------- frequência e duração (programas que não são por tentativa)
+const CHAVES_MEDIDA = ['FREQ', 'DUR'];
+const chaveTipo = (o) => estado.tipos.find(t => t.id === o.tipo_registro_id)?.chave || null;
+const ehMedida = (o) => CHAVES_MEDIDA.includes(chaveTipo(o));
+function txtMedida(tipo, v, unidade) {
+  if (v === null || v === undefined || v === '') return '—';
+  v = +v;
+  if (tipo === 'DUR') {
+    const s = Math.round(v), m = Math.floor(s / 60), r = s % 60;
+    return s < 60 ? `${s} s` : (r ? `${m} min ${r} s` : `${m} min`);
+  }
+  const n = v === Math.trunc(v) ? String(Math.trunc(v)) : String(v).replace('.', ',');
+  let un = unidade || 'vezes';
+  if (v === 1) un = un.toLowerCase() === 'vezes' ? 'vez' : (/s$/.test(un) && !/(ês|ões|ás|ís)$/i.test(un) ? un.slice(0, -1) : un);
+  return `${n} ${un}`;
+}
+function txtMeta(o, tipo) {
+  if (o.medida_meta === null || o.medida_meta === undefined || !o.medida_direcao) return null;
+  return `${o.medida_direcao === 'DIMINUIR' ? 'no máximo' : 'pelo menos'} ${txtMedida(tipo, o.medida_meta, o.medida_unidade)}`;
+}
+const mmss = (seg) => { const s = Math.max(0, Math.round(seg)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); };
+const bateuMeta = (o, v) => (o.medida_meta === null || o.medida_meta === undefined || !o.medida_direcao || v === null || v === undefined)
+  ? null : (o.medida_direcao === 'AUMENTAR' ? +v >= +o.medida_meta : +v <= +o.medida_meta);
+
 const FASE_CURTA = { LINHA_BASE: 'LB', INTERVENCAO: 'INT', MANUTENCAO: 'MAN', GENERALIZACAO: 'GEN', ADQUIRIDO: 'ADQ' };
 const FASES = { LINHA_BASE: ['Linha de base', 'i'], INTERVENCAO: ['Intervenção', 'b'], MANUTENCAO: ['Manutenção', 'w'], GENERALIZACAO: ['Generalização', 'w'], ADQUIRIDO: ['Adquirido', ''] };
 function cardObjetivo(o) {
   const alvos = (o.alvo || []).filter(a => a.ativo).sort((a, b) => a.ordem - b.ordem);
   const tipo = estado.tipos.find(t => t.id === o.tipo_registro_id);
+  const medida = ehMedida(o), meta = medida ? txtMeta(o, tipo.chave) : null;
   const campo = (rot, v) => v ? `<div class="campo"><b>${rot}</b>${esc(v)}</div>` : '';
   const hist = alvos.flatMap(a => (a.alvo_evolucao || []).map(e => ({ ...e, alvo: a.nome }))).sort((x, y) => y.calculado_em.localeCompare(x.calculado_em));
   const proxManut = (a) => { const g = (a.manutencao_agenda || []).filter(m => !m.data_realizada).sort((x, y) => x.data_programada.localeCompare(y.data_programada))[0]; return g ? ` · próx. ${fmtData(g.data_programada)}` : ''; };
   const ultima = hist[0];
   return `<div class="obj"><div class="cab"><div><h5>${esc(o.nome)}</h5>
-      <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap"><span class="tag ${FASES[o.fase][1]}">${FASES[o.fase][0]}</span>${tipo ? `<span class="tag">${esc(tipo.chave)}</span>` : ''}<span class="tag">${o.alvos_por_sessao} alvo(s)/sessão · ${o.tentativas_alvo} tent.</span></div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn ghost sm" data-evo="${o.id}" data-nome="${esc(o.nome)}">Evolução</button>${o.fase === 'ADQUIRIDO' && possoConfigurar() ? `<button class="btn sm" data-prox="${o.id}" data-nome="${esc(o.nome)}">Próximos objetivos</button>` : ''}${possoConfigurar() ? `<button class="btn ghost sm" data-fase-menu="${o.id}">Mudar fase</button>` : ''}</div></div>
+      <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap"><span class="tag ${FASES[o.fase][1]}">${FASES[o.fase][0]}</span>${tipo ? `<span class="tag">${esc(tipo.chave === 'FREQ' ? 'frequência' : tipo.chave === 'DUR' ? 'duração' : tipo.chave)}</span>` : ''}${medida ? `<span class="tag ${meta ? '' : 'w'}">${meta ? 'meta: ' + esc(meta) : 'sem meta definida'}</span>` : `<span class="tag">${o.alvos_por_sessao} alvo(s)/sessão · ${o.tentativas_alvo} tent.</span>`}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn ghost sm" data-evo="${o.id}" data-nome="${esc(o.nome)}">Evolução</button>${o.fase === 'ADQUIRIDO' && possoConfigurar() ? `<button class="btn sm" data-prox="${o.id}" data-nome="${esc(o.nome)}">Próximos objetivos</button>` : ''}${medida && possoConfigurar() ? `<button class="btn ghost sm" data-meta="${o.id}" data-tipo="${tipo.chave}" data-dir="${o.medida_direcao || ''}" data-val="${o.medida_meta ?? ''}" data-un="${esc(o.medida_unidade || '')}" data-nome="${esc(o.nome)}">${meta ? 'Mudar meta' : 'Definir meta'}</button>` : ''}${possoConfigurar() ? `<button class="btn ghost sm" data-fase-menu="${o.id}">Mudar fase</button>` : ''}</div></div>
     ${alvos.length ? `<div class="alvos">${alvos.map(a => `<span class="tag ${FASES[a.fase][1]}" title="${FASES[a.fase][0]}${a.fase === 'MANUTENCAO' ? proxManut(a) : ''}">${esc(a.nome)}${a.fase === 'MANUTENCAO' ? proxManut(a) : ''}</span>`).join('')}</div>` : ''}
     ${ultima ? `<div class="evol ${ultima.resultado === 'REGREDIU' ? 'ruim' : ''}"><b>${fmtData(ultima.calculado_em.slice(0, 10))} · ${esc(ultima.alvo)}</b> ${esc(ultima.motivo)}</div>` : ''}
     <details><summary>Ver procedimento${hist.length ? ' e histórico' : ''}</summary>${campo('Objetivo', o.objetivo)}${campo('Instrução (Sd)', o.instrucao_sd)}${campo('Procedimento de ensino', o.procedimento_ensino)}${campo('Passo da dica', o.passo_dica)}${campo('Correção', o.procedimento_correcao)}${campo('Critério', o.criterio_aprendizado)}${campo('Materiais', o.materiais)}
       ${hist.length ? `<div class="campo"><b>Histórico de fases</b>${hist.slice(0, 12).map(e => `<div class="evol ${e.resultado === 'REGREDIU' ? 'ruim' : ''}" style="margin-top:4px"><b>${fmtData(e.calculado_em.slice(0, 10))} · ${esc(e.alvo)} · ${FASES[e.fase_anterior]?.[0] || e.fase_anterior} → ${FASES[e.fase_nova]?.[0] || e.fase_nova}</b> ${esc(e.motivo)}</div>`).join('')}</div>` : ''}</details></div>`;
 }
+// meta dos programas de frequência e duração: quanto, e se é para aumentar ou diminuir
+function menuMeta(d) {
+  const dur = d.tipo === 'DUR';
+  const v = d.val === '' ? null : +d.val;
+  const min = dur && v !== null ? Math.floor(v / 60) : '';
+  const seg = dur && v !== null ? Math.round(v) % 60 : '';
+  modal(`<h3>Meta — ${esc(d.nome)}</h3>
+    <p class="muted" style="margin:0 0 10px;font-size:13px">${dur
+      ? 'Quanto tempo o comportamento precisa durar para contar como alcançado.'
+      : 'Quantas vezes o comportamento precisa acontecer para contar como alcançado.'}
+      Enquanto não houver meta, o app registra os números mas não muda a fase sozinho.</p>
+    <form class="form" id="fmeta">
+      <div><label>O que se espera</label><select name="medida_direcao">
+        <option value="">— sem meta (fase manual) —</option>
+        <option value="AUMENTAR" ${d.dir === 'AUMENTAR' ? 'selected' : ''}>Aumentar (quanto maior, melhor)</option>
+        <option value="DIMINUIR" ${d.dir === 'DIMINUIR' ? 'selected' : ''}>Diminuir (quanto menor, melhor)</option>
+      </select></div>
+      ${dur
+        ? `<div class="data3"><div><label>Minutos</label><input name="min" type="number" min="0" inputmode="numeric" value="${min}"></div>
+             <div><label>Segundos</label><input name="seg" type="number" min="0" max="59" inputmode="numeric" value="${seg}"></div></div>`
+        : `<div class="data3"><div><label>Quantas vezes</label><input name="meta" type="number" min="0" step="0.5" inputmode="decimal" value="${d.val}"></div>
+             <div style="flex:2"><label>Unidade</label><input name="medida_unidade" placeholder="vezes" value="${esc(d.un || '')}"></div></div>`}
+      <p class="muted" style="margin:0;font-size:12.5px">O critério de sessões seguidas é o mesmo dos outros programas (${estado.regras.CRIT_SESSOES || 3} sessões).</p>
+      <div class="acoes"><button type="button" class="btn ghost" data-fechar>Cancelar</button><button class="btn">Salvar</button></div></form>`);
+  $('#fmeta').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const up = { id: d.meta, medida_direcao: f.medida_direcao || null };
+    if (!f.medida_direcao) { up.medida_meta = null; }
+    else if (dur) {
+      const t = (+f.min || 0) * 60 + (+f.seg || 0);
+      if (!t) return toast('Informe o tempo da meta.');
+      up.medida_meta = t;
+    } else {
+      if (f.meta === '' || +f.meta < 0) return toast('Informe quantas vezes.');
+      up.medida_meta = +f.meta;
+      up.medida_unidade = (f.medida_unidade || '').trim() || null;
+    }
+    const r = await gravar('objetivo', up, 'update');
+    if (!r.ok) return toast('Não consegui salvar: ' + r.erro, 5000);
+    fecharModal();
+    toast(up.medida_meta === null ? 'Meta removida.' : 'Meta salva.');
+    render();
+  };
+}
+
 function menuFase(objId) {
   modal(`<h3>Mudar fase do objetivo</h3><p class="muted" style="margin:0 0 10px;font-size:13px">Normalmente o app muda a fase sozinho pelo critério ao finalizar a sessão. Use aqui só quando precisar forçar; fica registrado no histórico com seu nome.</p>
     <form class="form" id="fm">
@@ -611,7 +683,7 @@ async function iniciarSessao(p, eid, subpastas) {
   const r = await gravar('sessao', ses);
   if (!r.ok) return toast('Não foi possível iniciar: ' + r.erro, 6000);
   // guarda o pacote da sessão no aparelho para funcionar sem internet
-  await DB.set('sessao:' + ses.id, { sessao: ses, paciente: { id: p.id, nome: p.nome }, especialidade_id: sub.especialidade_id, objetivos: montarObjetivosSessao(sub), tentativas: [], agenda: [] });
+  await DB.set('sessao:' + ses.id, { sessao: ses, paciente: { id: p.id, nome: p.nome }, especialidade_id: sub.especialidade_id, objetivos: montarObjetivosSessao(sub), tentativas: [], medidas: [], agenda: [] });
   ir('#/sessao/' + ses.id);
 }
 function montarObjetivosSessao(sub) {
@@ -627,12 +699,13 @@ rotas.sessao = async (app, id) => {
     if (error) return { error };
     const [{ data: pac }, { data: sub }, { data: tent }] = await Promise.all([
       sb.from('paciente').select('id,nome').eq('id', ses.paciente_id).single(),
-      sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,alvos_por_sessao,tentativas_alvo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,ativo,alvo(id,nome,fase,ordem,ativo),objetivo_nivel_ajuda(ordem,sigla,grau))').eq('id', ses.subpasta_id).single(),
+      sb.from('subpasta').select('id,especialidade_id,objetivo(id,nome,fase,tipo_registro_id,medida_direcao,medida_meta,medida_unidade,alvos_por_sessao,tentativas_alvo,instrucao_sd,procedimento_ensino,passo_dica,procedimento_correcao,criterio_aprendizado,materiais,ativo,alvo(id,nome,fase,ordem,ativo),objetivo_nivel_ajuda(ordem,sigla,grau))').eq('id', ses.subpasta_id).single(),
       sb.from('tentativa').select('id,alvo_id,numero,sigla_ajuda,independente,erro').eq('sessao_id', id),
     ]);
+    const { data: meds } = await sb.from('medida').select('id,alvo_id,tipo,valor,observacao_seg').eq('sessao_id', id);
     const alvoIds = (sub?.objetivo || []).flatMap(o => (o.alvo || []).map(a => a.id));
     const { data: agenda } = alvoIds.length ? await sb.from('manutencao_agenda').select('id,alvo_id,data_programada,data_realizada').in('alvo_id', alvoIds).is('data_realizada', null) : { data: [] };
-    return { data: { sessao: ses, paciente: pac, especialidade_id: sub?.especialidade_id, objetivos: montarObjetivosSessao(sub || {}), tentativas: tent || [], agenda: agenda || [] }, error: null };
+    return { data: { sessao: ses, paciente: pac, especialidade_id: sub?.especialidade_id, objetivos: montarObjetivosSessao(sub || {}), tentativas: tent || [], medidas: meds || [], agenda: agenda || [] }, error: null };
   });
   if (!pk) { $('.main', app).innerHTML = '<p class="erro">Sessão não encontrada neste aparelho e sem conexão.</p>'; return; }
   const { sessao: ses, paciente: pac } = pk;
@@ -643,10 +716,86 @@ rotas.sessao = async (app, id) => {
   const pct = (alvoIds) => { const ts = pk.tentativas.filter(t => alvoIds.includes(t.alvo_id)); return ts.length ? Math.round(100 * ts.filter(t => t.independente).length / ts.length) : null; };
   const tiposTent = ['TDE', 'TDI', 'AT', 'EN'];
   let aberto = null; // {alvoId, numero} com o seletor de nível aberto
+  pk.medidas = pk.medidas || [];
+  const med = (alvoId) => pk.medidas.find(m => m.alvo_id === alvoId);
+  const cronos = {};   // alvoId -> { acc: segundos parados, t0: ms de quando começou a correr }
+  let relogio = null;
+  const tempoDe = (alvoId) => { const c = cronos[alvoId]; if (!c) return +(med(alvoId)?.valor || 0); return c.acc + (c.t0 ? (Date.now() - c.t0) / 1000 : 0); };
+  const pintarTempos = () => {
+    const els = app.querySelectorAll('[data-tempo]');
+    if (!els.length) { if (relogio) { clearInterval(relogio); relogio = null; } return; }
+    els.forEach(el => { el.textContent = mmss(tempoDe(el.dataset.tempo)); });
+  };
+  const ajustarRelogio = () => {
+    const correndo = Object.values(cronos).some(c => c.t0);
+    if (correndo && !relogio) relogio = setInterval(pintarTempos, 500);
+    if (!correndo && relogio) { clearInterval(relogio); relogio = null; }
+  };
+
+  // um número por alvo: contador (frequência) ou cronômetro (duração)
+  const blocoMedida = (o, chave) => {
+    const alvos = alvosDeHoje(o, pk.agenda);
+    if (!alvos.length) return '';
+    const meta = txtMeta(o, chave);
+    const linhas = alvos.map(a => {
+      const m = med(a.id), v = m ? +m.valor : null;
+      const ok = bateuMeta(o, v);
+      const emManut = ['MANUTENCAO', 'GENERALIZACAO'].includes(a.fase) || (a.fase === 'ADQUIRIDO' && (pk.agenda || []).some(g => g.alvo_id === a.id && !g.data_realizada));
+      const cab = `<div class="alvo-nome"><span class="tag ${FASES[a.fase][1]}" style="padding:1px 7px">${FASE_CURTA[a.fase] || ''}</span>${emManut ? ' <span class="tag w" style="padding:1px 7px">manutenção</span>' : ''} ${esc(a.nome)}${ok === null ? '' : ` <span class="tag ${ok ? 'b' : 'w'}" style="padding:1px 7px">${ok ? 'na meta' : 'fora da meta'}</span>`}</div>`;
+      if (chave === 'FREQ') {
+        return `<div class="alvo-linha medida">${cab}
+          <div class="contador">
+            <button class="cnt" data-freq="${a.id}" data-d="-1" ${podeEditar && (v === null || v > 0) ? '' : 'disabled'} title="${v === null ? 'registrar 0 (não ocorreu)' : 'tirar 1'}">−</button>
+            <span class="cnt-v">${v === null ? '—' : txtMedida('FREQ', v, o.medida_unidade)}</span>
+            <button class="cnt mais" data-freq="${a.id}" data-d="1" ${podeEditar ? '' : 'disabled'}>+</button>
+            ${podeEditar ? `<button class="btn ghost sm" data-digitar="${a.id}" data-tipo="FREQ">digitar</button>` : ''}
+          </div></div>`;
+      }
+      const correndo = !!cronos[a.id]?.t0;
+      return `<div class="alvo-linha medida">${cab}
+        <div class="contador">
+          <span class="cnt-v tempo" data-tempo="${a.id}">${mmss(tempoDe(a.id))}</span>
+          ${podeEditar ? `<button class="btn ${correndo ? '' : 'ghost'} sm" data-crono="${a.id}">${correndo ? 'Parar' : 'Iniciar'}</button>
+          <button class="btn ghost sm" data-digitar="${a.id}" data-tipo="DUR">digitar</button>` : ''}
+        </div></div>`;
+    }).join('');
+    return `<div class="obj"><div class="cab"><div><h5>${esc(o.nome)}</h5>
+        <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap"><span class="tag ${FASES[o.fase][1]}">${FASES[o.fase][0]}</span><span class="tag">${chave === 'FREQ' ? 'frequência' : 'duração'}</span><span class="tag ${meta ? '' : 'w'}">${meta ? 'meta: ' + esc(meta) : 'sem meta — fase manual'}</span></div></div></div>
+      ${linhas}
+      <details style="margin-top:6px;font-size:12.5px"><summary>Procedimento</summary>${[['Sd', o.instrucao_sd], ['Ensino', o.procedimento_ensino], ['Dica', o.passo_dica], ['Correção', o.procedimento_correcao], ['Critério', o.criterio_aprendizado], ['Materiais', o.materiais]].filter(x => x[1]).map(x => `<div class="campo"><b>${x[0]}</b>${esc(x[1])}</div>`).join('') || '<span class="muted">—</span>'}</details>
+    </div>`;
+  };
+
+  const salvarMedida = async (alvoId, tipo, valor) => {
+    const atual = med(alvoId);
+    const m = { id: atual?.id || uuid(), sessao_id: id, alvo_id: alvoId, tipo, valor: Math.max(0, Math.round(valor * 100) / 100), dispositivo_id: dispositivo };
+    if (atual) Object.assign(atual, m); else pk.medidas.push(m);
+    await DB.set('sessao:' + id, pk);
+    const r = await gravar('medida', m);
+    if (!r.ok) toast('Medida não gravada: ' + r.erro, 5000);
+  };
+
+  const digitar = (alvoId, tipo) => {
+    const v = med(alvoId) ? +med(alvoId).valor : null;
+    modal(`<h3>${tipo === 'DUR' ? 'Tempo registrado' : 'Quantas vezes'}</h3><form class="form" id="fmed">
+      ${tipo === 'DUR'
+        ? `<div class="data3"><div><label>Minutos</label><input name="min" type="number" min="0" inputmode="numeric" value="${v === null ? '' : Math.floor(v / 60)}" autofocus></div>
+             <div><label>Segundos</label><input name="seg" type="number" min="0" max="59" inputmode="numeric" value="${v === null ? '' : Math.round(v) % 60}"></div></div>`
+        : `<div><label>Número de ocorrências</label><input name="valor" type="number" min="0" step="0.5" inputmode="decimal" value="${v === null ? '' : v}" autofocus></div>`}
+      <div class="acoes"><button type="button" class="btn ghost" data-fechar>Cancelar</button><button class="btn">Salvar</button></div></form>`);
+    $('#fmed').onsubmit = async (ev) => {
+      ev.preventDefault(); const g = Object.fromEntries(new FormData(ev.target));
+      const valor = tipo === 'DUR' ? (+g.min || 0) * 60 + (+g.seg || 0) : (+g.valor || 0);
+      if (tipo === 'DUR') { cronos[alvoId] = { acc: valor, t0: null }; ajustarRelogio(); }
+      await salvarMedida(alvoId, tipo, valor);
+      fecharModal(); desenhar();
+    };
+  };
 
   const desenhar = () => {
     const blocos = pk.objetivos.map(o => {
       const tipo = estado.tipos.find(t => t.id === o.tipo_registro_id);
+      if (tipo && CHAVES_MEDIDA.includes(tipo.chave)) return blocoMedida(o, tipo.chave);
       if (tipo && !tiposTent.includes(tipo.chave)) return `<div class="obj"><h5>${esc(o.nome)}</h5><p class="muted" style="font-size:12.5px;margin:4px 0 0">Registro de ${esc(tipo.nome)} ainda não disponível no app.</p></div>`;
       const alvos = alvosDeHoje(o, pk.agenda);
       if (!alvos.length) return '';
@@ -669,15 +818,31 @@ rotas.sessao = async (app, id) => {
       </div>`;
     }).join('');
     const totalT = pk.tentativas.length, indT = pk.tentativas.filter(t => t.independente).length;
+    const totalM = pk.medidas.length;
+    const temMedida = pk.objetivos.some(o => ehMedida(o) && alvosDeHoje(o, pk.agenda).length);
     $('.main', app).innerHTML = `
       <div class="phead"><div><p style="margin:0"><button class="link" onclick="location.hash='#/paciente/${ses.paciente_id}/sub-${pk.especialidade_id || ''}'">← ${esc(pac?.nome || 'Paciente')}</button></p>
-        <h1>Sessão de ${fmtData(ses.data_sessao)}</h1><p>${fechada ? (ses.falta ? 'Falta registrada' : 'Finalizada') : 'Em andamento'} · ${totalT} tentativa(s)${totalT ? ` · ${Math.round(100 * indT / totalT)}% independentes` : ''}</p></div>
+        <h1>Sessão de ${fmtData(ses.data_sessao)}</h1><p>${fechada ? (ses.falta ? 'Falta registrada' : 'Finalizada') : 'Em andamento'} · ${totalT} tentativa(s)${totalT ? ` · ${Math.round(100 * indT / totalT)}% independentes` : ''}${totalM ? ` · ${totalM} medida(s)` : ''}</p></div>
         ${podeEditar ? `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" id="falta">Falta</button><button class="btn" id="fim">Finalizar sessão</button></div>` : ''}</div>
       ${ses.observacoes ? `<div class="card" style="margin-bottom:12px"><b style="font-size:12px;color:var(--ink3)">OBSERVAÇÕES</b><div>${esc(ses.observacoes)}</div>${ses.fatores_externos ? `<div class="muted" style="font-size:12.5px;margin-top:4px">Fatores externos: ${esc(ses.fatores_externos)}</div>` : ''}</div>` : ''}
-      ${podeEditar ? '<p class="muted" style="font-size:12.5px;margin:0 0 10px">Toque na tentativa e escolha o nível de ajuda. Tudo é salvo na hora (e sincroniza depois se faltar internet).</p>' : ''}
+      ${podeEditar ? `<p class="muted" style="font-size:12.5px;margin:0 0 10px">Toque na tentativa e escolha o nível de ajuda.${temMedida ? ' Nos programas de frequência e duração, use o contador ou o cronômetro.' : ''} Tudo é salvo na hora (e sincroniza depois se faltar internet).</p>` : ''}
       ${blocos || '<p class="muted">Nenhum alvo programado para hoje nesta subpasta.</p>'}`;
     app.querySelectorAll('.tent').forEach(b => b.onclick = () => { const k = { alvoId: b.dataset.alvo, numero: +b.dataset.n }; aberto = (aberto && aberto.alvoId === k.alvoId && aberto.numero === k.numero) ? null : k; desenhar(); });
     app.querySelectorAll('.nv').forEach(b => b.onclick = () => registrar(b.dataset.alvo, +b.dataset.n, b.hasAttribute('data-limpar') ? null : { sigla: b.dataset.sigla, grau: b.dataset.grau }));
+    app.querySelectorAll('[data-freq]').forEach(b => b.onclick = async () => {
+      const alvoId = b.dataset.freq, atual = med(alvoId) ? +med(alvoId).valor : 0;
+      await salvarMedida(alvoId, 'FREQ', Math.max(0, atual + (+b.dataset.d)));
+      desenhar();
+    });
+    app.querySelectorAll('[data-crono]').forEach(b => b.onclick = async () => {
+      const alvoId = b.dataset.crono;
+      const c = cronos[alvoId] || (cronos[alvoId] = { acc: +(med(alvoId)?.valor || 0), t0: null });
+      if (c.t0) { c.acc = tempoDe(alvoId); c.t0 = null; await salvarMedida(alvoId, 'DUR', c.acc); }
+      else c.t0 = Date.now();
+      ajustarRelogio(); desenhar();
+    });
+    app.querySelectorAll('[data-digitar]').forEach(b => b.onclick = () => digitar(b.dataset.digitar, b.dataset.tipo));
+    pintarTempos();
     const bf = $('#fim', app); if (bf) bf.onclick = () => finalizar(false);
     const bx = $('#falta', app); if (bx) bx.onclick = () => finalizar(true);
   };
@@ -707,12 +872,15 @@ rotas.sessao = async (app, id) => {
       <div class="acoes"><button type="button" class="btn ghost" data-fechar>Voltar</button><button class="btn">${falta ? 'Registrar falta' : 'Finalizar'}</button></div></form>`);
     $('#ff').onsubmit = async (ev) => {
       ev.preventDefault(); const f = Object.fromEntries(new FormData(ev.target));
+      // cronômetro que ficou correndo: grava o tempo antes de fechar
+      for (const [alvoId, c] of Object.entries(cronos)) if (c.t0) { c.acc = tempoDe(alvoId); c.t0 = null; await salvarMedida(alvoId, 'DUR', c.acc); }
+      ajustarRelogio();
       const up = { id, situacao: 'FINALIZADA', falta: !!falta, fim: new Date().toISOString(), observacoes: f.observacoes || null, fatores_externos: f.fatores_externos || null };
       Object.assign(ses, up); await DB.set('sessao:' + id, pk);
       const r = await gravar('sessao', up, 'update');
       // alvos de manutenção/generalização treinados hoje: baixa na agenda
       if (!falta) for (const o of pk.objetivos) for (const a of alvosDeHoje(o, pk.agenda)) {
-        if (['MANUTENCAO', 'GENERALIZACAO'].includes(a.fase) && pk.tentativas.some(t => t.alvo_id === a.id)) {
+        if (['MANUTENCAO', 'GENERALIZACAO'].includes(a.fase) && (pk.tentativas.some(t => t.alvo_id === a.id) || pk.medidas.some(m => m.alvo_id === a.id))) {
           const g = pk.agenda.filter(x => x.alvo_id === a.id && !x.data_realizada).sort((x, y) => x.data_programada.localeCompare(y.data_programada))[0];
           if (g && g.id) await gravar('manutencao_agenda', { id: g.id, data_realizada: hoje() }, 'update');
         }
@@ -968,13 +1136,62 @@ function grafico(series, corte) {
     ${series.length > 1 ? `<div class="legenda">${series.map((s, i) => `<span><i style="background:${cores[i % cores.length]}"></i>${esc(s.nome)}</span>`).join('')}</div>` : ''}`;
 }
 
+// evolução dos programas de frequência e duração: o número medido ao longo do tempo
+function evolucaoMedida(objetivoId, nomeObjetivo, dias, linhas) {
+  const tipo = linhas[0].tipo, unidade = linhas[0].unidade || null;
+  const meta = linhas[0].meta === null ? null : +linhas[0].meta;
+  const dir = linhas[0].direcao;
+  const alvos = [];
+  for (const r of linhas) {
+    let g = alvos.find(x => x.id === r.alvo_id);
+    if (!g) { g = { id: r.alvo_id, nome: r.alvo, pontos: [] }; alvos.push(g); }
+    g.pontos.push({ d: r.data_sessao, v: +r.valor, txt: r.texto });
+  }
+  const box = $('#modal .box');
+  box.innerHTML = `<h3>Evolução — ${esc(nomeObjetivo)}</h3>
+    <div class="busca"><select id="perevo">${PERIODOS.map(([v, t]) => `<option value="${v}" ${v === String(dias ?? '') ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+    <p class="muted" style="font-size:12.5px;margin:0 0 8px">${tipo === 'DUR' ? 'Duração' : 'Frequência'} por sessão.${meta === null ? ' Este objetivo ainda não tem meta definida, então a fase muda só manualmente.' : ` Meta: ${dir === 'DIMINUIR' ? 'no máximo' : 'pelo menos'} ${esc(txtMedida(tipo, meta, unidade))}.`}</p>
+    ${graficoMedida(alvos, meta, tipo, unidade)}
+    <b style="font-size:12px;color:var(--ink3);display:block;margin-top:14px">SESSÕES</b>
+    <div class="lista" style="max-height:30vh;overflow:auto">${linhas.slice().reverse().map(r => `<div class="it" style="cursor:default"><div><b>${fmtData(r.data_sessao)} · ${esc(r.texto)}</b><small>${esc(r.alvo)}${r.atingiu === null ? '' : r.atingiu ? ' · na meta' : ' · fora da meta'}${r.profissional ? ' · ' + esc(r.profissional) : ''}${r.fase_mudou ? ' · passou para ' + (FASES[r.fase_mudou]?.[0] || r.fase_mudou) : ''}</small></div></div>`).join('')}</div>
+    <div class="acoes"><button type="button" class="btn ghost" data-fechar>Fechar</button></div>`;
+  $('#perevo').onchange = (e) => evolucaoObjetivo(objetivoId, nomeObjetivo, e.target.value);
+}
+
+// gráfico com escala própria (não é porcentagem) e a linha da meta
+function graficoMedida(series, meta, tipo, unidade) {
+  const todos = series.flatMap(s => s.pontos);
+  if (!todos.length) return '<p class="muted" style="font-size:12.5px">Sem sessões registradas no período.</p>';
+  const datas = [...new Set(todos.map(p => p.d))].sort();
+  const vals = todos.map(p => p.v).concat(meta === null ? [] : [meta]);
+  const topo = Math.max(1, ...vals) * 1.12;
+  const L = 46, R = 10, T = 10, B = 26, W = 560, H = 170;
+  const px = (d) => datas.length < 2 ? L + (W - L - R) / 2 : L + (W - L - R) * datas.indexOf(d) / (datas.length - 1);
+  const py = (v) => T + (H - T - B) * (1 - v / topo);
+  const cores = ['var(--brand)', '#b45309', '#1d4ed8', '#9333ea', '#be123c', '#0f766e'];
+  const linhas = series.map((s, i) => {
+    const ps = s.pontos.slice().sort((a, b) => a.d.localeCompare(b.d));
+    return `<polyline points="${ps.map(p => `${px(p.d)},${py(p.v)}`).join(' ')}" fill="none" stroke="${cores[i % cores.length]}" stroke-width="2" stroke-linejoin="round"/>
+      ${ps.map(p => `<circle cx="${px(p.d)}" cy="${py(p.v)}" r="3" fill="${cores[i % cores.length]}"><title>${esc(s.nome)} · ${fmtData(p.d)} · ${esc(p.txt)}</title></circle>`).join('')}`;
+  }).join('');
+  const marcasY = [0, topo / 2, topo].map(v => `<line x1="${L}" y1="${py(v)}" x2="${W - R}" y2="${py(v)}" stroke="var(--line)" stroke-dasharray="2 3"/><text x="4" y="${py(v) + 4}" font-size="10" fill="var(--ink3)">${esc(txtMedida(tipo, Math.round(v), unidade))}</text>`).join('');
+  const mostra = datas.length <= 6 ? datas : [datas[0], datas[Math.floor(datas.length / 2)], datas[datas.length - 1]];
+  const marcasX = mostra.map(d => `<text x="${px(d)}" y="${H - 8}" font-size="10" fill="var(--ink3)" text-anchor="middle">${fmtData(d).slice(0, 5)}</text>`).join('');
+  const linhaMeta = meta === null ? '' : `<line x1="${L}" y1="${py(meta)}" x2="${W - R}" y2="${py(meta)}" stroke="var(--brand)" stroke-width="1.5" stroke-dasharray="5 3" opacity=".6"/>
+    <text x="${W - R}" y="${py(meta) - 4}" font-size="10" fill="var(--brand-3)" text-anchor="end">meta ${esc(txtMedida(tipo, meta, unidade))}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="graf" role="img">${marcasY}${linhaMeta}${marcasX}${linhas}</svg>
+    ${series.length > 1 ? `<div class="legenda">${series.map((s, i) => `<span><i style="background:${cores[i % cores.length]}"></i>${esc(s.nome)}</span>`).join('')}</div>` : ''}`;
+}
+
 async function evolucaoObjetivo(objetivoId, nomeObjetivo, dias) {
   modal('<h3>Evolução</h3><div class="spinner"></div>');
   const d = desde(dias);
-  const [{ data: porAlvo }, { data: porObj }] = await Promise.all([
+  const [{ data: porAlvo }, { data: porObj }, { data: porMedida }] = await Promise.all([
     sb.rpc('evolucao_alvo', { p_objetivo: objetivoId, p_desde: d }),
     sb.rpc('evolucao_objetivo', { p_objetivo: objetivoId, p_desde: d }),
+    sb.rpc('evolucao_medida', { p_objetivo: objetivoId, p_desde: d }),
   ]);
+  if ((porMedida || []).length) return evolucaoMedida(objetivoId, nomeObjetivo, dias, porMedida);
   const corte = +estado.regras.CRIT_PCT || 80;
   const alvos = [];
   for (const r of porAlvo || []) {
