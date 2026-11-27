@@ -1,6 +1,6 @@
 // service worker: guarda a "casca" do app para abrir sem internet. Dados vêm do IndexedDB (app.js).
 // Estratégia: com internet, busca sempre a versão nova (e atualiza o cache); sem internet, usa o cache.
-const CACHE = 'clia-v0.6.0';
+const CACHE = 'clia-v0.7.0';
 const ARQUIVOS = ['./', './index.html', './app.js', './app.css', './style.css', './manifest.webmanifest', './icone.svg'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(ARQUIVOS)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));
