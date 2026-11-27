@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.5.1',
+  versao: '0.6.0',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -196,7 +196,7 @@ async function render() {
 // bloco da marca: usa logo.png quando existir; senão, o nome escrito
 function marca(compacto) {
   return `<div class="brand sem-logo">
-    <img class="logo" src="logo.png" alt="CLIA Núcleo Comportamental" onload="this.closest('.brand').classList.remove('sem-logo')">
+    <img class="logo" src="logo.svg" alt="CLIA Núcleo Comportamental" onload="this.closest('.brand').classList.remove('sem-logo')">
     <span class="nome"><span class="mark">C</span><span><b>CLIA</b>${compacto ? '' : '<small>Núcleo Comportamental</small>'}</span></span>
   </div>`;
 }
@@ -212,7 +212,8 @@ function shell(conteudo, ativo) {
       <nav class="nav">
         ${item('pacientes', 'Pacientes', ativo === 'pacientes')}
         ${item('catalogo', 'Catálogo de programas', ativo === 'catalogo')}
-        ${souDirecao() ? '<div class="sep">Direção</div>' + item('equipe', 'Profissionais e convites', ativo === 'equipe') : ''}
+        ${podeVerPainel() ? '<div class="sep">Direção</div>' + item('direcao', 'Painel', ativo === 'direcao') : ''}
+        ${souDirecao() ? item('equipe', 'Profissionais e convites', ativo === 'equipe') : ''}
         <div class="sep">Conta</div>
         ${item('conta', eu.nome.split(' ')[0] + ' · ' + eu.perfil_nome, ativo === 'conta')}
       </nav>
@@ -1093,6 +1094,119 @@ function formProfissional(x) {
     if (error) return toast(error.message, 5000);
     fecharModal(); render();
   };
+}
+
+// ----------------------------------------------------------------- painel da direção
+const podeVerPainel = () => ['direcao', 'supervisor'].includes(estado.eu?.perfil);
+const ABAS_DIR = [['alertas', 'O que precisa de atenção'], ['numeros', 'Números'], ['pacientes', 'Pacientes'], ['equipe', 'Equipe']];
+const GRAV = { 3: ['urg', 'Urgente'], 2: ['ate', 'Atenção'], 1: ['avi', 'Aviso'] };
+
+function filtrosPainel(dias, unidade) {
+  const sel = (id, ops, v) => `<select id="${id}">${ops.map(([k, t]) => `<option value="${k}"${k === v ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+  return `<div class="busca">
+    ${sel('pdias', [['30', 'últimos 30 dias'], ['60', 'últimos 2 meses'], ['90', 'últimos 3 meses'], ['180', 'últimos 6 meses']], dias)}
+    ${souDirecao() ? sel('punid', [['', 'Todas as unidades'], ...estado.unidades.map(u => [u.id, u.nome])], unidade) : ''}
+  </div>`;
+}
+
+rotas.direcao = async (app, aba = 'alertas') => {
+  if (!podeVerPainel()) return rotas.pacientes(app);
+  const dias = sessionStorage.getItem('pdias') || '30';
+  const unid = souDirecao() ? (sessionStorage.getItem('punid') || '') : '';
+  const abas = ABAS_DIR.map(([k, t]) => `<button class="${k === aba ? 'on' : ''}" onclick="location.hash='#/direcao/${k}'">${esc(t)}</button>`).join('');
+  app.innerHTML = shell(`<div class="phead"><div><h1>Painel da direção</h1>
+      <p>${souDirecao() ? 'Todas as unidades da CLIA.' : 'Sua unidade.'} Nada aqui muda o prontuário — é só leitura do que a equipe já registrou.</p></div></div>
+    <div class="abas">${abas}</div>
+    ${filtrosPainel(dias, unid)}
+    <div id="corpo"><div class="spinner"></div></div>`, 'direcao');
+  const trocar = (id) => { const el = $('#' + id, app); if (el) el.onchange = () => { sessionStorage.setItem(id, el.value); rotas.direcao(app, aba); }; };
+  trocar('pdias'); trocar('punid');
+  const alvo = $('#corpo', app);
+  const u = unid || null;
+  try {
+    if (aba === 'numeros') await painelNumeros(alvo, dias, u);
+    else if (aba === 'pacientes') await painelPacientes(alvo, dias, u);
+    else if (aba === 'equipe') await painelEquipe(alvo, dias, u);
+    else await painelAlertas(alvo, dias, u);
+  } catch (e) {
+    alvo.innerHTML = `<div class="card"><p class="muted">Não consegui carregar: ${esc(e.message || String(e))}</p></div>`;
+  }
+};
+
+async function painelAlertas(alvo, dias, u) {
+  const linhas = await ler('painel_alertas_' + dias + '_' + (u || 'all'),
+    () => sb.rpc('alertas_direcao', { p_unidade: u, p_dias: +dias })) || [];
+  if (!linhas.length) {
+    alvo.innerHTML = '<div class="card"><p class="muted">Nenhum alerta. Nenhum paciente parado, nenhuma manutenção atrasada e nenhuma sessão esquecida aberta.</p></div>';
+    return;
+  }
+  const porTipo = {};
+  linhas.forEach(l => { (porTipo[l.tipo] = porTipo[l.tipo] || { rotulo: l.rotulo, gravidade: l.gravidade, itens: [] }).itens.push(l); });
+  const ordem = Object.values(porTipo).sort((a, b) => b.gravidade - a.gravidade || b.itens.length - a.itens.length);
+  const resumo = ordem.map(g => `<span class="pill ${GRAV[g.gravidade][0]}">${esc(g.rotulo)} <b>${g.itens.length}</b></span>`).join('');
+  alvo.innerHTML = `<div class="pills">${resumo}</div>` + ordem.map(g => `
+    <div class="card bloco-al ${GRAV[g.gravidade][0]}">
+      <div class="cab-al"><h3>${esc(g.rotulo)}</h3><span class="tag ${GRAV[g.gravidade][0]}">${GRAV[g.gravidade][1]}</span><span class="muted">${g.itens.length}</span></div>
+      <div class="lista">${g.itens.map(l => `<div class="it" data-p="${l.paciente_id}">
+        <div><b>${esc(l.paciente)}</b><small>${[l.especialidade, l.profissional, l.objetivo].filter(Boolean).map(esc).join(' · ')}</small>
+        <div class="muted" style="font-size:12.5px;margin-top:3px">${esc(l.detalhe || '')}</div></div>
+        ${l.dias != null ? `<span class="dias">${l.dias}<small>${l.tipo === 'FALTAS' ? 'faltas' : 'dias'}</small></span>` : ''}
+      </div>`).join('')}</div>
+    </div>`).join('');
+  alvo.querySelectorAll('.it[data-p]').forEach(el => { el.onclick = () => ir('#/paciente/' + el.dataset.p + '/evolucao'); });
+}
+
+async function painelNumeros(alvo, dias, u) {
+  const nums = await ler('painel_num_' + dias + '_' + (u || 'all'),
+    () => sb.rpc('painel_numeros', { p_dias: +dias, p_unidade: u })) || [];
+  const v = (k) => nums.find(n => n.chave === k) || {};
+  const PCT = ['independencia'];
+  const fmt = (n) => n.valor == null ? '—' : (PCT.includes(n.chave) ? n.valor + '%' : n.valor);
+  const cartao = (k) => { const n = v(k); return `<div class="stat"><span class="n">${fmt(n)}</span><span class="r">${esc(n.rotulo || '')}</span>${n.detalhe ? `<span class="d">${esc(n.detalhe)}</span>` : ''}</div>`; };
+  const fases = ['linha_base', 'intervencao', 'manutencao', 'adquirido'];
+  const tot = fases.reduce((s, k) => s + (+v(k).valor || 0), 0) || 1;
+  alvo.innerHTML = `
+    <div class="stats">${['pacientes', 'sessoes', 'faltas', 'independencia', 'objetivos', 'equipe'].map(cartao).join('')}</div>
+    <div class="card"><h3 style="margin:0 0 10px">Onde estão os objetivos</h3>
+      <div class="barra">${fases.map((k, i) => { const n = +v(k).valor || 0; return n ? `<span class="f f${i}" style="width:${100 * n / tot}%" title="${esc(v(k).rotulo)}: ${n}"></span>` : ''; }).join('')}</div>
+      <div class="legfase">${fases.map((k, i) => `<span><i class="f${i}"></i>${esc(v(k).rotulo)} <b>${v(k).valor ?? 0}</b></span>`).join('')}</div>
+      <p class="muted" style="font-size:12.5px;margin:10px 0 0">${esc(v('adquirido').detalhe || '')}. Objetivo em linha de base por muito tempo aparece como alerta na primeira aba.</p>
+    </div>`;
+}
+
+async function painelPacientes(alvo, dias, u) {
+  const linhas = await ler('painel_pac_' + dias + '_' + (u || 'all'),
+    () => sb.rpc('panorama_pacientes', { p_dias: +dias, p_unidade: u })) || [];
+  if (!linhas.length) { alvo.innerHTML = '<div class="card"><p class="muted">Nenhum paciente ativo.</p></div>'; return; }
+  alvo.innerHTML = `<div class="card tabela"><table class="tb"><thead><tr>
+      <th>Paciente</th><th>Fases</th><th class="c">Sessões</th><th class="c">Faltas</th><th class="c">Indep.</th><th class="c">Adquir.</th><th>Última sessão</th></tr></thead><tbody>
+    ${linhas.map(l => `<tr data-p="${l.paciente_id}">
+      <td><b>${esc(l.paciente)}</b><br><small class="muted">${esc(l.unidade || '')} · ${l.especialidades} especialidade(s) · ${l.objetivos} objetivo(s)</small></td>
+      <td><span class="mini lb">${l.linha_base}</span><span class="mini iv">${l.intervencao}</span><span class="mini mn">${l.manutencao}</span><span class="mini ad">${l.adquirido}</span></td>
+      <td class="c">${l.sessoes}</td>
+      <td class="c ${l.faltas >= 3 ? 'ruim' : ''}">${l.faltas}</td>
+      <td class="c">${l.pct == null ? '—' : l.pct + '%'}</td>
+      <td class="c">${l.adquiridos_periodo || '—'}</td>
+      <td>${l.ultima_sessao ? fmtData(l.ultima_sessao) + ` <small class="muted">(${l.dias}d)</small>` : '<span class="ruim">nunca</span>'}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted" style="font-size:12.5px">LB = linha de base · INT = intervenção · MAN = manutenção · ADQ = adquirido. Clique numa linha para abrir a evolução do paciente.</p>`;
+  alvo.querySelectorAll('tr[data-p]').forEach(el => { el.onclick = () => ir('#/paciente/' + el.dataset.p + '/evolucao'); });
+}
+
+async function painelEquipe(alvo, dias, u) {
+  const linhas = (await ler('painel_eq_' + dias + '_' + (u || 'all'),
+    () => sb.rpc('producao_equipe', { p_dias: +dias, p_unidade: u })) || [])
+    .filter(l => !['recepcao', 'Recepção'].includes(l.perfil) || l.sessoes);
+  if (!linhas.length) { alvo.innerHTML = '<div class="card"><p class="muted">Ninguém cadastrado ainda.</p></div>'; return; }
+  alvo.innerHTML = `<div class="card tabela"><table class="tb"><thead><tr>
+      <th>Profissional</th><th class="c">Pacientes</th><th class="c">Sessões</th><th class="c">Faltas</th><th class="c">Tentativas</th><th class="c">Indep.</th><th class="c">Objetivos</th><th>Última sessão</th></tr></thead><tbody>
+    ${linhas.map(l => `<tr>
+      <td><b>${esc(l.profissional)}</b><br><small class="muted">${[l.perfil, l.especialidade, l.unidade].filter(Boolean).map(esc).join(' · ')}</small></td>
+      <td class="c">${l.pacientes}</td><td class="c">${l.sessoes}</td><td class="c">${l.faltas}</td>
+      <td class="c">${l.tentativas}</td><td class="c">${l.pct == null ? '—' : l.pct + '%'}</td><td class="c">${l.objetivos}</td>
+      <td>${l.ultima_sessao ? fmtData(l.ultima_sessao) + ` <small class="muted">(${l.dias}d)</small>` : '<span class="ruim">nunca</span>'}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted" style="font-size:12.5px">"Objetivos" conta os objetivos ativos dos pacientes em que a pessoa está na equipe. "Indep." é o % de respostas independentes nas sessões que ela aplicou no período.</p>`;
 }
 
 // ----------------------------------------------------------------- conta
