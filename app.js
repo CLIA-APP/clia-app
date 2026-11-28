@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.7.0',
+  versao: '0.8.0',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -74,9 +74,14 @@ const DB = (() => {
       t.onerror = () => erro(t.error);
     });
   };
+  // o cache guarda { __em: quando foi salvo, v: dados } para a limpeza saber a idade
+  const cru = (r) => (r && typeof r === 'object' && '__em' in r) ? r.v : r;
   return {
-    get: (k) => tx('cache', 'readonly', s => s.get(k)),
-    set: (k, v) => tx('cache', 'readwrite', s => s.put(v, k)),
+    get: async (k) => cru(await tx('cache', 'readonly', s => s.get(k))),
+    set: (k, v) => tx('cache', 'readwrite', s => s.put({ __em: Date.now(), v }, k)),
+    em: async (k) => { const r = await tx('cache', 'readonly', s => s.get(k)); return (r && typeof r === 'object' && '__em' in r) ? r.__em : 0; },
+    chaves: () => tx('cache', 'readonly', s => s.getAllKeys()),
+    del: (k) => tx('cache', 'readwrite', s => s.delete(k)),
     filaAdd: (item) => tx('fila', 'readwrite', s => s.put(item)),
     filaDel: (id) => tx('fila', 'readwrite', s => s.delete(id)),
     filaTodos: () => tx('fila', 'readonly', s => s.getAll()),
@@ -117,6 +122,7 @@ async function sincronizar() {
   }
   atualizarBarraRede();
   if (falhas) toast(`${falhas} registro(s) não puderam ser gravados — a direção foi avisada.`, 5000);
+  if (!(await DB.filaTodos()).length) await limparLocal();
 }
 function mostrarRede(tipo, texto) { const r = $('#rede'); r.className = 'rede ' + tipo; r.textContent = texto; r.hidden = !texto; }
 async function atualizarBarraRede() {
@@ -145,6 +151,36 @@ async function ler(chave, consulta) {
   }
   return (await DB.get(chave)) ?? null;
 }
+
+// ------------------------------------------------- limpeza dos dados locais
+// Politica de uso de aparelhos, itens 5.3 e 5.4: o que ja foi sincronizado nao
+// fica guardado no aparelho. O registro da sessao sai da fila assim que o
+// servidor confirma; o que sobra e a copia de leitura, apagada aqui.
+const RETENCAO_H = 12;
+const ehPessoal = (k) => k !== 'base' && k !== 'eu' && k !== 'uid';
+function chaveAberta() {
+  const [rota, id] = (location.hash.replace('#/', '') || '').split('/');
+  if (rota === 'sessao') return 'sessao:' + id;
+  if (rota === 'avaliacao') return 'avaliacao:' + id;
+  if (rota === 'paciente') return 'pasta:' + id;
+  return null;
+}
+async function limparLocal({ tudo = false } = {}) {
+  const agora = Date.now(), aberta = chaveAberta();
+  let n = 0;
+  for (const k of (await DB.chaves()) || []) {
+    if (!tudo) {
+      if (!ehPessoal(k) || k === aberta) continue;
+      if (agora - (await DB.em(k)) < RETENCAO_H * 3600000) continue;
+    }
+    await DB.del(k); n++;
+  }
+  return n;
+}
+async function contarLocal() {
+  return ((await DB.chaves()) || []).filter(ehPessoal).length;
+}
+setInterval(() => limparLocal(), 10 * 60000);
 
 // ----------------------------------------------------------------- estado
 const estado = { eu: null, especialidades: [], unidades: [], tipos: [], perfis: [], regras: {}, niveisPadrao: [] };
@@ -180,6 +216,10 @@ async function render() {
   const app = $('#app');
   const { data: { session } } = await sb.auth.getSession();
   if (!session) { telaLogin(app); return; }
+  if ((await DB.get('uid')) !== session.user.id) {
+    await limparLocal({ tudo: true });
+    await DB.set('uid', session.user.id);
+  }
   if (!estado.eu) {
     const { data, error } = await sb.rpc('meu_cadastro');
     if (error && !online()) { estado.eu = await DB.get('eu'); }
@@ -268,7 +308,7 @@ function telaPendente(app, email, texto) {
   app.innerHTML = `<div class="centro"><div class="login">${marca(true)}
     <h1>Quase lá</h1><p class="sub">${esc(email)}</p><div class="ok">${esc(texto)}</div>
     <p style="margin-top:16px"><button class="btn ghost block" id="sair">Sair</button></p></div></div>`;
-  $('#sair', app).onclick = async () => { await sb.auth.signOut(); estado.eu = null; render(); };
+  $('#sair', app).onclick = async () => { await limparLocal({ tudo: true }); await sb.auth.signOut(); estado.eu = null; render(); };
 }
 
 // ----------------------------------------------------------------- pacientes
@@ -1429,17 +1469,26 @@ async function painelEquipe(alvo, dias, u) {
 
 // ----------------------------------------------------------------- conta
 rotas.conta = async (app) => {
-  const eu = estado.eu; const fila = await DB.filaTodos();
+  const eu = estado.eu; const fila = await DB.filaTodos(); const locais = await contarLocal();
   app.innerHTML = shell(`<div class="phead"><div><h1>${esc(eu.nome)}</h1><p>${esc(eu.email)} · ${esc(eu.perfil_nome)} · ${esc(eu.unidade || 'todas as unidades')}${eu.especialidade ? ' · ' + esc(eu.especialidade) : ''}</p></div></div>
-    <div class="card"><dl class="dl"><dt>Aparelho</dt><dd><code style="font-size:11.5px">${dispositivo.slice(0, 8)}</code></dd><dt>Pendentes</dt><dd>${fila.length} registro(s) aguardando sincronização</dd><dt>Versão</dt><dd>${CONFIG.versao}</dd></dl>
-      <div class="acoes" style="margin-top:14px"><button class="btn ghost" id="sync">Sincronizar agora</button><button class="btn ghost" id="senha">Trocar senha</button><button class="btn danger" id="sair">Sair</button></div></div>`, 'conta');
+    <div class="card"><dl class="dl"><dt>Aparelho</dt><dd><code style="font-size:11.5px">${dispositivo.slice(0, 8)}</code></dd><dt>Pendentes</dt><dd>${fila.length} registro(s) aguardando sincronização</dd><dt>Versão</dt><dd>${CONFIG.versao}</dd><dt>Dados neste aparelho</dt><dd>${locais === 0 ? 'nenhum dado de paciente guardado' : locais + ' item(ns) de paciente guardado(s)'} <small class="muted">apagados sozinhos ${RETENCAO_H}h depois de sincronizar, e ao sair da conta</small></dd></dl>
+      <div class="acoes" style="margin-top:14px"><button class="btn ghost" id="sync">Sincronizar agora</button><button class="btn ghost" id="limpar">Apagar os dados deste aparelho</button><button class="btn ghost" id="senha">Trocar senha</button><button class="btn danger" id="sair">Sair</button></div></div>`, 'conta');
+  $('#limpar', app).onclick = async () => {
+    if (fila.length) return toast(`Há ${fila.length} registro(s) aguardando envio. Sincronize antes de apagar.`, 5000);
+    await limparLocal({ tudo: true });
+    toast('Dados apagados deste aparelho. O que esta no servidor nao muda.');
+    render();
+  };
   $('#sync', app).onclick = () => sincronizar().then(() => render());
   $('#senha', app).onclick = () => {
     modal(`<h3>Nova senha</h3><form class="form" id="fs"><div><label>Senha (mín. 8)</label><input name="s" type="password" minlength="8" required></div><div class="acoes"><button type="button" class="btn ghost" data-fechar>Cancelar</button><button class="btn">Salvar</button></div></form>`);
     $('#fs').onsubmit = async (ev) => { ev.preventDefault(); const { error } = await sb.auth.updateUser({ password: new FormData(ev.target).get('s') }); if (error) return toast(error.message); fecharModal(); toast('Senha alterada.'); };
   };
   $('#sair', app).onclick = async () => {
-    if (fila.length && !confirm(`Há ${fila.length} registro(s) não sincronizados. Sair mesmo assim? Eles ficam guardados neste aparelho.`)) return;
+    if (fila.length && online()) await sincronizar();
+    const resta = (await DB.filaTodos()).length;
+    if (resta && !confirm(`Há ${resta} registro(s) não sincronizados. Sair mesmo assim? Eles ficam guardados neste aparelho até a próxima entrada.`)) return;
+    if (!resta) await limparLocal({ tudo: true });
     await sb.auth.signOut(); estado.eu = null; ir('#/'); render();
   };
 };
