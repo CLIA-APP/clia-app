@@ -8,7 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONFIG = {
   url: 'https://qojifretsdskzdpnuazy.supabase.co',
   chave: 'sb_publishable_u5pmUEjeIA1rnyQbYkW7KQ_3bLtWgKn',   // chave pública: segura no app
-  versao: '0.8.1',
+  versao: '0.9.0',
 };
 const sb = createClient(CONFIG.url, CONFIG.chave);
 
@@ -157,7 +157,7 @@ async function ler(chave, consulta) {
 // fica guardado no aparelho. O registro da sessao sai da fila assim que o
 // servidor confirma; o que sobra e a copia de leitura, apagada aqui.
 const RETENCAO_H = 12;
-const ehPessoal = (k) => k !== 'base' && k !== 'eu' && k !== 'uid';
+const ehPessoal = (k) => !['base', 'eu', 'uid', 'mfa_em'].includes(k);
 function chaveAberta() {
   const [rota, id] = (location.hash.replace('#/', '') || '').split('/');
   if (rota === 'sessao') return 'sessao:' + id;
@@ -183,7 +183,7 @@ async function contarLocal() {
 setInterval(() => limparLocal(), 10 * 60000);
 
 // ----------------------------------------------------------------- estado
-const estado = { eu: null, especialidades: [], unidades: [], tipos: [], perfis: [], regras: {}, niveisPadrao: [] };
+const estado = { eu: null, mfa: null, especialidades: [], unidades: [], tipos: [], perfis: [], regras: {}, niveisPadrao: [] };
 const souDirecao = () => estado.eu?.perfil === 'direcao';
 const possoCadastrar = () => ['direcao', 'supervisor', 'recepcao'].includes(estado.eu?.perfil);
 const possoConfigurar = () => ['direcao', 'supervisor', 'terapeuta'].includes(estado.eu?.perfil);
@@ -229,6 +229,7 @@ async function render() {
     await carregarBase();
     sincronizar();
   }
+  if (estado.mfa !== 'ok' && !(await portaoMfa(app))) return;
   const [rota, ...args] = (location.hash.replace('#/', '') || 'pacientes').split('/');
   (rotas[rota] || rotas.pacientes)(app, ...args);
 }
@@ -308,6 +309,92 @@ function telaPendente(app, email, texto) {
   app.innerHTML = `<div class="centro"><div class="login">${marca(true)}
     <h1>Quase lá</h1><p class="sub">${esc(email)}</p><div class="ok">${esc(texto)}</div>
     <p style="margin-top:16px"><button class="btn ghost block" id="sair">Sair</button></p></div></div>`;
+  $('#sair', app).onclick = async () => { await limparLocal({ tudo: true }); await sb.auth.signOut(); estado.eu = null; render(); };
+}
+
+// ------------------------------------------------- dupla autenticação (MFA)
+// Política de uso de aparelhos, item 3.5: obrigatória, pedida no primeiro
+// acesso de cada aparelho; direção e supervisão reconfirmam de tempos em tempos.
+// Quem ainda não cadastrou o segundo fator entra, mas o banco não devolve dado
+// de paciente enquanto a sessão não estiver verificada (ver sessao_verificada).
+const MFA_DIAS_CHEFIA = 7;
+
+async function portaoMfa(app) {
+  let aal, fatores;
+  try {
+    ({ data: aal } = await sb.auth.mfa.getAuthenticatorAssuranceLevel());
+    ({ data: fatores } = await sb.auth.mfa.listFactors());
+  } catch (e) { estado.mfa = 'ok'; return true; }    // sem rede: segue; o banco barra o que precisa
+  const totp = (fatores?.totp || []);
+  const ativos = totp.filter(f => f.status === 'verified');
+  if (!ativos.length) { await telaMfaCadastro(app, totp); return false; }
+  if (aal?.currentLevel !== 'aal2') { telaMfaCodigo(app, ativos[0].id, false); return false; }
+  const chefia = ['direcao', 'supervisor'].includes(estado.eu?.perfil);
+  const ultima = (await DB.get('mfa_em')) || 0;
+  if (chefia && Date.now() - ultima > MFA_DIAS_CHEFIA * 86400000) { telaMfaCodigo(app, ativos[0].id, true); return false; }
+  estado.mfa = 'ok';
+  return true;
+}
+
+async function verificar(factorId, codigo) {
+  const { data: ch, error: e1 } = await sb.auth.mfa.challenge({ factorId });
+  if (e1) return e1.message;
+  const { error: e2 } = await sb.auth.mfa.verify({ factorId, challengeId: ch.id, code: codigo });
+  if (e2) return 'Código não confere. Use o próximo que o aplicativo mostrar.';
+  await DB.set('mfa_em', Date.now());
+  return null;
+}
+
+async function telaMfaCadastro(app, totp) {
+  for (const f of totp) if (f.status !== 'verified') await sb.auth.mfa.unenroll({ factorId: f.id });
+  const { data, error } = await sb.auth.mfa.enroll({ factorType: 'totp', friendlyName: 'CLIA ' + Date.now() });
+  if (error) {
+    app.innerHTML = `<div class="centro"><div class="login">${marca(false)}<h1>Dupla autenticação</h1>
+      <div class="erro">${esc(error.message)}</div>
+      <p style="margin-top:14px"><button class="btn block" id="de">Tentar de novo</button></p></div></div>`;
+    $('#de', app).onclick = () => render();
+    return;
+  }
+  app.innerHTML = `<div class="centro"><div class="login">${marca(false)}
+    <h1>Dupla autenticação</h1>
+    <p class="sub">O prontuário guarda dado de saúde de criança, então a entrada tem duas etapas. Isso é pedido uma vez por aparelho.</p>
+    <ol style="font-size:14px;line-height:1.7;padding-left:18px;margin:0 0 14px">
+      <li>Instale um aplicativo autenticador no celular (Google Authenticator, Microsoft Authenticator ou similar).</li>
+      <li>Leia o código abaixo com ele.</li>
+      <li>Digite aqui os 6 dígitos que o aplicativo mostrar.</li>
+    </ol>
+    <div style="text-align:center;margin:12px 0"><img src="${data.totp.qr_code}" alt="Código QR" style="width:200px;height:200px"></div>
+    <p class="muted" style="font-size:12.5px;text-align:center">Sem câmera? Digite esta chave no aplicativo:<br><code style="font-size:12px;word-break:break-all">${esc(data.totp.secret)}</code></p>
+    <form class="form" id="fm"><div><label>Código de 6 dígitos</label>
+      <input name="c" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></div>
+      <div class="acoes"><button class="btn block">Ativar</button></div></form>
+    <p style="margin-top:14px"><button class="btn ghost block" id="sair">Sair</button></p></div></div>`;
+  $('#fm', app).onsubmit = async (ev) => {
+    ev.preventDefault();
+    const erro = await verificar(data.id, new FormData(ev.target).get('c').trim());
+    if (erro) return toast(erro, 5000);
+    toast('Dupla autenticação ativada.');
+    render();
+  };
+  $('#sair', app).onclick = async () => { await sb.auth.signOut(); estado.eu = null; render(); };
+}
+
+function telaMfaCodigo(app, factorId, reconfirmar) {
+  app.innerHTML = `<div class="centro"><div class="login">${marca(false)}
+    <h1>${reconfirmar ? 'Confirme que é você' : 'Código de verificação'}</h1>
+    <p class="sub">${reconfirmar
+      ? 'De tempos em tempos a direção e a supervisão confirmam o acesso. Abra o aplicativo autenticador e digite o código.'
+      : 'Abra o aplicativo autenticador e digite o código de 6 dígitos.'}</p>
+    <form class="form" id="fm"><div><label>Código</label>
+      <input name="c" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required autofocus></div>
+      <div class="acoes"><button class="btn block">Continuar</button></div></form>
+    <p style="margin-top:14px"><button class="btn ghost block" id="sair">Sair</button></p></div></div>`;
+  $('#fm', app).onsubmit = async (ev) => {
+    ev.preventDefault();
+    const erro = await verificar(factorId, new FormData(ev.target).get('c').trim());
+    if (erro) return toast(erro, 5000);
+    render();
+  };
   $('#sair', app).onclick = async () => { await limparLocal({ tudo: true }); await sb.auth.signOut(); estado.eu = null; render(); };
 }
 
