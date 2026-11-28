@@ -105,7 +105,7 @@ async function gravar(tabela, registro, op = 'upsert') {
 async function sincronizar() {
   if (!online()) return;
   const itens = await DB.filaTodos();
-  if (!itens.length) { atualizarBarraRede(); return; }
+  if (!itens.length) { atualizarBarraRede(); await limparLocal(); return; }
   mostrarRede('sync', `Sincronizando ${itens.length} registro(s)…`);
   let falhas = 0;
   for (const it of itens.sort((a, b) => a.em - b.em)) {
